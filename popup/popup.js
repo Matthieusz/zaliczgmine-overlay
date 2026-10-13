@@ -2,6 +2,7 @@ import { Effect, Fiber, FiberSet, Layer } from "effect";
 import { ChromeStorage, chromeStorageLayer } from "../src/chrome-storage.ts";
 import { chromeRuntimeLayer } from "../src/chrome-runtime.ts";
 import { ChromeTabs, chromeTabsLayer } from "../src/chrome-tabs.ts";
+import { importPopupGpx } from "../src/popup-gpx-import.ts";
 import { fetchRuntimeJson } from "../src/runtime-fetch.ts";
 import { failureReply, remoteErrorMessageKey } from "../src/user-errors.ts";
 
@@ -188,31 +189,6 @@ const popupLifetime = Effect.fn("Popup.lifetime")(function* (lifetime) {
     gpxStatusText.textContent = t("gpx.savedCount", { count: tracks.length });
   }
 
-  function readSelectedGpx(callback) {
-    const file = gpxFileInput.files && gpxFileInput.files[0];
-
-    if (!file) {
-      callback(null, t("gpx.chooseFile"));
-
-      return;
-    }
-
-    const reader = new FileReader();
-    reader.onload = function () {
-      callback({
-        id: createGpxId(),
-        name: file.name,
-        text: String(reader.result || ""),
-      });
-    };
-
-    reader.onerror = function () {
-      callback(null, t("gpx.readError"));
-    };
-
-    reader.readAsText(file);
-  }
-
   chooseGpxBtn.addEventListener("click", function () {
     gpxFileInput.click();
   });
@@ -223,42 +199,22 @@ const popupLifetime = Effect.fn("Popup.lifetime")(function* (lifetime) {
   });
 
   importGpxBtn.addEventListener("click", function () {
-    readSelectedGpx(function (gpx, error) {
-      if (error) {
-        showStatus(error, "error");
+    const file = gpxFileInput.files && gpxFileInput.files[0];
+    runStorage(
+      importPopupGpx(file, ACTION.IMPORT_GPX, createGpxId, renderGpxList).pipe(
+        Effect.match({
+          onFailure: (error) => showStatus(t(error.key), "error"),
+          onSuccess: (key) => {
+            if (key === "gpx.added") {
+              gpxFileName.textContent = t("gpx.noFile");
+              gpxFileInput.value = "";
+            }
 
-        return;
-      }
-
-      getStoredGpxTracks(function (tracks) {
-        const nextTracks = tracks.concat(gpx);
-
-        setStoredGpxTracks(nextTracks, function () {
-          sendMessageToContentScript(
-            {
-              action: ACTION.IMPORT_GPX,
-              data: gpx,
-            },
-            function (response) {
-              if (response && response.success) {
-                gpxFileName.textContent = t("gpx.noFile");
-                gpxFileInput.value = "";
-                showStatus(t("gpx.added"), "success");
-              } else if (response && response.error) {
-                if (response.error === "extension.noResponse") {
-                  showStatus(t("gpx.saved"), "success");
-                } else {
-                  setStoredGpxTracks(nextTracks.filter((track) => track.id !== gpx.id));
-                  showStatus(t(remoteErrorMessageKey(response.error)), "error");
-                }
-              } else {
-                showStatus(t("gpx.saved"), "success");
-              }
-            },
-          );
-        });
-      });
-    });
+            showStatus(t(key), "success");
+          },
+        }),
+      ),
+    );
   });
 
   function removeGpxTrack(id) {
