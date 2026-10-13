@@ -1,7 +1,17 @@
+import { Effect, Fiber, FiberSet } from "effect";
+import { ChromeStorage, chromeStorageLayer } from "./src/chrome-storage.ts";
 import { failureReply, NetworkError } from "./src/user-errors.ts";
 
-(function () {
+const lifetime = new AbortController();
+
+const contentLifetime = Effect.gen(function* () {
   "use strict";
+
+  const onUnload = () => lifetime.abort();
+  yield* Effect.acquireRelease(
+    Effect.sync(() => window.addEventListener("unload", onUnload, { once: true })),
+    () => Effect.sync(() => window.removeEventListener("unload", onUnload)),
+  );
 
   const log = globalThis.ZaliczGmineLogger.create("content-script");
 
@@ -28,9 +38,18 @@ import { failureReply, NetworkError } from "./src/user-errors.ts";
 
   const { isSupportedPage } = globalThis.ZaliczGmineSites;
 
-  const languageReady = chrome.storage.local.get("language").then((settings) => {
-    globalThis.ZaliczGmineI18n.setLanguage(settings.language);
-  });
+  const storage = yield* ChromeStorage;
+  const runStorage = yield* FiberSet.makeRuntime();
+
+  const languageReady = runStorage(
+    storage
+      .getPromise("language")
+      .pipe(
+        Effect.tap((settings) =>
+          Effect.sync(() => globalThis.ZaliczGmineI18n.setLanguage(settings.language)),
+        ),
+      ),
+  );
 
   let scriptsLoaded = false;
   let scriptsLoading = null;
@@ -80,25 +99,47 @@ import { failureReply, NetworkError } from "./src/user-errors.ts";
 
     // storage
     if (event.data.type === MESSAGE.STORAGE_GET) {
-      chrome.storage.local.get(event.data.keys || null, (result) => {
-        window.postMessage(
-          {
-            type: MESSAGE.STORAGE_RESPONSE,
-            requestId: event.data.requestId,
-            data: chrome.runtime.lastError
-              ? undefined
-              : { ...result, resolvedLanguage: globalThis.ZaliczGmineI18n.language },
-            error: chrome.runtime.lastError ? "storage.error" : undefined,
-          },
-          window.location.origin,
-        );
-      });
+      runStorage(
+        storage.get(event.data.keys || null).pipe(
+          Effect.match({
+            onSuccess: (result) =>
+              window.postMessage(
+                {
+                  type: MESSAGE.STORAGE_RESPONSE,
+                  requestId: event.data.requestId,
+                  data: { ...result, resolvedLanguage: globalThis.ZaliczGmineI18n.language },
+                  error: undefined,
+                },
+                window.location.origin,
+              ),
+            onFailure: () =>
+              window.postMessage(
+                {
+                  type: MESSAGE.STORAGE_RESPONSE,
+                  requestId: event.data.requestId,
+                  data: undefined,
+                  error: "storage.error",
+                },
+                window.location.origin,
+              ),
+          }),
+        ),
+      );
 
       return;
     }
 
     if (event.data.type === MESSAGE.STORAGE_SET) {
-      chrome.storage.local.set(event.data.data);
+      // The page protocol has no write acknowledgement.
+      runStorage(
+        storage
+          .setPromise(event.data.data)
+          .pipe(
+            Effect.catchTag("StorageError", () =>
+              Effect.sync(() => log.warn("Storage write failed")),
+            ),
+          ),
+      );
     }
   });
 
@@ -180,7 +221,7 @@ import { failureReply, NetworkError } from "./src/user-errors.ts";
     if (!isSupportedRoute()) return;
 
     scriptsLoading = (async () => {
-      await languageReady;
+      await Effect.runPromise(Fiber.join(languageReady));
 
       for (const script of pageScripts) {
         await injectScript(script);
@@ -217,4 +258,14 @@ import { failureReply, NetworkError } from "./src/user-errors.ts";
 
   loadScriptsIfSupported();
   watchRouteChanges();
-})();
+
+  yield* Effect.never;
+});
+
+Effect.runFork(
+  contentLifetime.pipe(
+    Effect.scoped,
+    Effect.provide(chromeStorageLayer(chrome.storage, chrome.runtime)),
+  ),
+  { signal: lifetime.signal },
+);

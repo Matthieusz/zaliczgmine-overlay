@@ -1,8 +1,18 @@
+import { Effect, Fiber, FiberSet } from "effect";
+import { ChromeStorage, chromeStorageLayer } from "../src/chrome-storage.ts";
 import { failureReply, remoteErrorMessageKey } from "../src/user-errors.ts";
 
-document.addEventListener("DOMContentLoaded", async function () {
+const popupLifetime = Effect.fn("Popup.lifetime")(function* (lifetime) {
+  const onUnload = () => lifetime.abort();
+  yield* Effect.acquireRelease(
+    Effect.sync(() => window.addEventListener("unload", onUnload, { once: true })),
+    () => Effect.sync(() => window.removeEventListener("unload", onUnload)),
+  );
+
   const i18n = globalThis.ZaliczGmineI18n;
-  const settings = await chrome.storage.local.get("language");
+  const storage = yield* ChromeStorage;
+  const runStorage = yield* FiberSet.makeRuntime();
+  const settings = yield* storage.getPromise("language");
   i18n.setLanguage(settings.language);
   localize();
   const { t } = globalThis.ZaliczGmineI18n;
@@ -32,7 +42,8 @@ document.addEventListener("DOMContentLoaded", async function () {
     : "auto";
   languageSelect.addEventListener("change", async () => {
     try {
-      await chrome.storage.local.set({ language: languageSelect.value });
+      const save = runStorage(storage.setPromise({ language: languageSelect.value }));
+      await Effect.runPromise(Fiber.join(save));
       document.getElementById("languageReloadHint").hidden = false;
     } catch {
       showStatus(t("language.saveError"), "error");
@@ -79,9 +90,14 @@ document.addEventListener("DOMContentLoaded", async function () {
   }
 
   function loadSelectedUser() {
-    chrome.storage.local.get(["zaliczGmineUserId", "zaliczGmineUsername"], function (result) {
-      renderSelectedUser(result.zaliczGmineUserId, result.zaliczGmineUsername);
-    });
+    runStorage(
+      storage.get(["zaliczGmineUserId", "zaliczGmineUsername"]).pipe(
+        Effect.orElseSucceed(() => ({})),
+        Effect.map((result) =>
+          renderSelectedUser(result.zaliczGmineUserId, result.zaliczGmineUsername),
+        ),
+      ),
+    );
   }
 
   function handleStorageChange(changes, areaName) {
@@ -90,16 +106,10 @@ document.addEventListener("DOMContentLoaded", async function () {
     }
   }
 
-  chrome.storage.onChanged.addListener(handleStorageChange);
-  window.addEventListener("unload", () =>
-    chrome.storage.onChanged.removeListener(handleStorageChange),
-  );
+  yield* storage.listen(handleStorageChange);
 
   function loadGpxInfo() {
-    chrome.storage.local.get(["zaliczGmineGpxList"], function (result) {
-      const tracks = normalizeStoredGpx(result);
-      renderGpxList(tracks);
-    });
+    getStoredGpxTracks(renderGpxList);
   }
 
   function normalizeStoredGpx(result) {
@@ -115,17 +125,26 @@ document.addEventListener("DOMContentLoaded", async function () {
   }
 
   function getStoredGpxTracks(callback) {
-    chrome.storage.local.get(["zaliczGmineGpxList"], function (result) {
-      callback(normalizeStoredGpx(result));
-    });
+    runStorage(
+      storage.get(["zaliczGmineGpxList"]).pipe(
+        Effect.orElseSucceed(() => ({})),
+        Effect.map((result) => callback(normalizeStoredGpx(result))),
+      ),
+    );
   }
 
   function setStoredGpxTracks(tracks, callback) {
-    chrome.storage.local.set({ zaliczGmineGpxList: tracks }, function () {
-      renderGpxList(tracks);
+    // Preserve the legacy GPX callback policy: writes do not gate planner commands on lastError.
+    runStorage(
+      storage.set({ zaliczGmineGpxList: tracks }).pipe(
+        Effect.orElseSucceed(() => undefined),
+        Effect.map(() => {
+          renderGpxList(tracks);
 
-      if (callback) callback();
-    });
+          if (callback) callback();
+        }),
+      ),
+    );
   }
 
   function renderGpxList(tracks) {
@@ -257,19 +276,24 @@ document.addEventListener("DOMContentLoaded", async function () {
   }
 
   removeAllGpxBtn.addEventListener("click", function () {
-    chrome.storage.local.remove(["zaliczGmineGpxList"], function () {
-      gpxFileInput.value = "";
-      gpxFileName.textContent = t("gpx.noFile");
-      renderGpxList([]);
+    runStorage(
+      storage.remove(["zaliczGmineGpxList"]).pipe(
+        Effect.orElseSucceed(() => undefined),
+        Effect.map(() => {
+          gpxFileInput.value = "";
+          gpxFileName.textContent = t("gpx.noFile");
+          renderGpxList([]);
 
-      sendMessageToContentScript({ action: ACTION.REMOVE_GPX }, function (response) {
-        if (response && response.success) {
-          showStatus(t("gpx.removedFromMap"), "success");
-        } else {
-          showStatus(t("gpx.removedFromStorage"), "success");
-        }
-      });
-    });
+          sendMessageToContentScript({ action: ACTION.REMOVE_GPX }, function (response) {
+            if (response && response.success) {
+              showStatus(t("gpx.removedFromMap"), "success");
+            } else {
+              showStatus(t("gpx.removedFromStorage"), "success");
+            }
+          });
+        }),
+      ),
+    );
   });
 
   const userSearchResults = document.getElementById("userSearchResults");
@@ -328,38 +352,36 @@ document.addEventListener("DOMContentLoaded", async function () {
     const userId = String(user.id);
     searchVersion++;
     userSearchResults.textContent = "";
-    chrome.storage.local.set(
-      { zaliczGmineUserId: userId, zaliczGmineUsername: user.username },
-      function () {
-        if (chrome.runtime.lastError) {
-          showStatus(t("account.saveError"), "error");
-
-          return;
-        }
-
-        renderSelectedUser(userId, user.username);
-        userIdInput.value = "";
-        showStatus(t("account.saved", { username: user.username }), "success");
-        sendMessageToContentScript(
-          {
-            action: ACTION.RELOAD_COMMUNES,
-            data: { userId },
+    runStorage(
+      storage.set({ zaliczGmineUserId: userId, zaliczGmineUsername: user.username }).pipe(
+        Effect.match({
+          onFailure: () => showStatus(t("account.saveError"), "error"),
+          onSuccess: () => {
+            renderSelectedUser(userId, user.username);
+            userIdInput.value = "";
+            showStatus(t("account.saved", { username: user.username }), "success");
+            sendMessageToContentScript(
+              {
+                action: ACTION.RELOAD_COMMUNES,
+                data: { userId },
+              },
+              function (response) {
+                if (response?.success) {
+                  visitedCommunesCountEl.textContent = response.visitedCommunesCount;
+                  showStatus(
+                    t("communes.loadedCount", { count: response.visitedCommunesCount }),
+                    "success",
+                  );
+                } else if (response?.error) {
+                  showStatus(t(remoteErrorMessageKey(response.error)), "error");
+                } else {
+                  showStatus(t("account.savedOpenMap", { username: user.username }), "success");
+                }
+              },
+            );
           },
-          function (response) {
-            if (response?.success) {
-              visitedCommunesCountEl.textContent = response.visitedCommunesCount;
-              showStatus(
-                t("communes.loadedCount", { count: response.visitedCommunesCount }),
-                "success",
-              );
-            } else if (response?.error) {
-              showStatus(t(remoteErrorMessageKey(response.error)), "error");
-            } else {
-              showStatus(t("account.savedOpenMap", { username: user.username }), "success");
-            }
-          },
-        );
-      },
+        }),
+      ),
     );
   }
 
@@ -452,4 +474,18 @@ document.addEventListener("DOMContentLoaded", async function () {
       statusDiv.style.display = "none";
     }, 5000);
   }
+
+  yield* Effect.never;
+});
+
+document.addEventListener("DOMContentLoaded", function () {
+  const lifetime = new AbortController();
+
+  Effect.runFork(
+    popupLifetime(lifetime).pipe(
+      Effect.scoped,
+      Effect.provide(chromeStorageLayer(chrome.storage, chrome.runtime)),
+    ),
+    { signal: lifetime.signal },
+  );
 });
