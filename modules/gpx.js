@@ -1,4 +1,5 @@
-import { Predicate } from "effect";
+import { Effect } from "effect";
+import { restoreGpx } from "../src/restore-gpx.ts";
 import { InvalidGpx } from "../src/user-errors.ts";
 
 (function (app) {
@@ -194,29 +195,10 @@ import { InvalidGpx } from "../src/user-errors.ts";
   async function loadStoredGpx() {
     const storage = await getStorage(["zaliczGmineGpxList"]);
 
-    const storedTracks = Array.isArray(storage.zaliczGmineGpxList)
-      ? storage.zaliczGmineGpxList
-      : [];
-
     tracks = [];
     revision++;
 
-    let skipped = 0;
-
-    for (const track of storedTracks) {
-      if (!track || !Predicate.isString(track.text) || !track.text.trim()) {
-        skipped++;
-
-        continue;
-      }
-
-      try {
-        storeGpx(track.text, track.name, track.id);
-      } catch (error) {
-        skipped++;
-        log.error(`Skipped GPX "${track.name || "track.gpx"}":`, error);
-      }
-    }
+    const { skipped } = await Effect.runPromise(restoreGpx(storage.zaliczGmineGpxList, storeGpx));
 
     renderGpx();
 
