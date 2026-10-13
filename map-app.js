@@ -156,7 +156,7 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
               startupStep(async () => {
                 await waitForStyleLoad(lifetime.signal);
                 const request = getPolygonRequestForMap(map);
-                const polygons = await fetchPolygons(request, true);
+                const polygons = await fetchPolygons(request);
 
                 return { request, polygons };
               }),

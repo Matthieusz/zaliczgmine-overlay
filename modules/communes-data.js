@@ -1,3 +1,5 @@
+import { Effect } from "effect";
+import { loadingStep } from "../src/zaliczgmine-api.ts";
 import { AccountError } from "../src/user-errors.ts";
 
 (function (app) {
@@ -177,7 +179,7 @@ import { AccountError } from "../src/user-errors.ts";
     }
   }
 
-  async function fetchPolygons(request, propagateFailure = false) {
+  async function fetchPolygons(request) {
     if (polygonsByRequest.has(request.cacheKey)) {
       log.debug("Using cached communes", { apiZoom: request.apiZoom });
       const cachedPolygons = polygonsByRequest.get(request.cacheKey);
@@ -189,23 +191,20 @@ import { AccountError } from "../src/user-errors.ts";
     if (pendingPolygonRequests.has(request.cacheKey)) {
       log.debug("Sharing in-flight commune request", { apiZoom: request.apiZoom });
 
-      // Share the same error handling as the original caller.
-      return pendingPolygonRequests.get(request.cacheKey).catch((error) => {
-        if (propagateFailure) throw error;
-
-        return null;
-      });
+      return pendingPolygonRequests.get(request.cacheKey);
     }
 
     try {
-      const pendingRequest = api
-        .getPolygons(request.apiZoom, "pl", request.bounds)
-        .then((items) => {
-          rememberPolygons(request.cacheKey, items);
-          log.debug(`Fetched ${items.length} communes at zoom=${request.apiZoom}`);
+      const pendingRequest = Effect.runPromise(
+        loadingStep(() => api.getPolygons(request.apiZoom, "pl", request.bounds)).pipe(
+          Effect.map((items) => {
+            rememberPolygons(request.cacheKey, items);
+            log.debug(`Fetched ${items.length} communes at zoom=${request.apiZoom}`);
 
-          return items;
-        });
+            return items;
+          }),
+        ),
+      );
 
       pendingPolygonRequests.set(request.cacheKey, pendingRequest);
 
@@ -213,9 +212,7 @@ import { AccountError } from "../src/user-errors.ts";
     } catch (error) {
       log.error(`Could not fetch communes at zoom=${request.apiZoom}:`, error);
 
-      if (propagateFailure) throw error;
-
-      return null;
+      throw error;
     } finally {
       pendingPolygonRequests.delete(request.cacheKey);
     }
@@ -257,8 +254,6 @@ import { AccountError } from "../src/user-errors.ts";
       bounds,
       cacheKey: `route-polygons:${apiZoom}:${bounds.north}:${bounds.east}:${bounds.south}:${bounds.west}`,
     });
-
-    if (!polygons) throw new Error(t("communes.boundariesError"));
 
     return polygons;
   }

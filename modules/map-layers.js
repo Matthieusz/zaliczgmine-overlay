@@ -177,7 +177,12 @@ import { awaitMapReady } from "../src/map-lifetime.ts";
     const requestId = ++latestPolygonRequestId;
 
     if (request.cacheKey === app.state.polygonsKey && app.state.polygons) return;
-    const polygons = await fetchPolygons(request);
+
+    const polygons = await fetchPolygons(request).catch((error) => {
+      log.warn("Could not refresh boundaries", error);
+
+      return null;
+    });
 
     if (
       !app.state.map ||
