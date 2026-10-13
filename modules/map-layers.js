@@ -1,36 +1,41 @@
-(function(app) {
-  'use strict';
+(function (app) {
+  "use strict";
 
   const { t } = globalThis.ZaliczGmineI18n;
-  const log = globalThis.ZaliczGmineLogger.create('map-layers');
+  const log = globalThis.ZaliczGmineLogger.create("map-layers");
 
   const { layerIds, sourceIds, styles, zoom: zoomConfig } = app.config;
   const SHOW_VISITED_COMMUNES = false;
+
   const activeCommunesLayerIds = [
     layerIds.unvisitedFill,
     layerIds.unvisitedOutline,
-    ...(SHOW_VISITED_COMMUNES ? [layerIds.visitedFill, layerIds.visitedOutline] : [])
+    ...(SHOW_VISITED_COMMUNES ? [layerIds.visitedFill, layerIds.visitedOutline] : []),
   ];
+
   let latestPolygonRequestId = 0;
   let styleObserverAttached = false;
   let zoomObserverAttached = false;
 
   function setMapboxSource(sourceId, geojsonData) {
     const source = app.state.map.getSource(sourceId);
+
     if (source) {
       source.setData(geojsonData);
     } else {
-      app.state.map.addSource(sourceId, { type: 'geojson', data: geojsonData });
+      app.state.map.addSource(sourceId, { type: "geojson", data: geojsonData });
     }
   }
 
   function findInsertBeforeLayer() {
     const style = app.state.map.getStyle();
+
     if (!style || !style.layers) return null;
 
-    const labelTypes = ['label', 'poi', 'place', 'road-label'];
-    const layer = style.layers.find(styleLayer =>
-      labelTypes.some(type => styleLayer.id.toLowerCase().includes(type))
+    const labelTypes = ["label", "poi", "place", "road-label"];
+
+    const layer = style.layers.find((styleLayer) =>
+      labelTypes.some((type) => styleLayer.id.toLowerCase().includes(type)),
     );
 
     return layer ? layer.id : null;
@@ -43,7 +48,7 @@
   }
 
   function allLayersExist() {
-    return activeCommunesLayerIds.every(layerId => app.state.map.getLayer(layerId));
+    return activeCommunesLayerIds.every((layerId) => app.state.map.getLayer(layerId));
   }
 
   function shouldShowCommunesOutlines() {
@@ -52,58 +57,73 @@
 
   function addLayer(layerConfig, beforeLayer) {
     const layout = {
-      visibility: app.state.communesVisible ? 'visible' : 'none'
+      visibility: app.state.communesVisible ? "visible" : "none",
     };
 
     app.state.map.addLayer({ ...layerConfig, layout }, beforeLayer);
   }
 
   function addCommunesLayers() {
-    log.debug('Creating commune layers');
+    log.debug("Creating commune layers");
+
     if (!app.state.map || !app.state.polygons) return;
 
     const { convertToGeoJSON } = app.modules.communesData;
+
     const beforeLayer = app.state.map.getLayer(layerIds.routeFill)
-      ? layerIds.routeFill : findInsertBeforeLayer();
+      ? layerIds.routeFill
+      : findInsertBeforeLayer();
 
     setMapboxSource(sourceIds.visited, convertToGeoJSON(app.state.polygons, true));
     setMapboxSource(sourceIds.unvisited, convertToGeoJSON(app.state.polygons, false));
 
     removeLayers();
 
-    addLayer({
-      id: layerIds.unvisitedFill,
-      type: 'fill',
-      source: sourceIds.unvisited,
-      paint: styles.unvisitedFill
-    }, beforeLayer);
+    addLayer(
+      {
+        id: layerIds.unvisitedFill,
+        type: "fill",
+        source: sourceIds.unvisited,
+        paint: styles.unvisitedFill,
+      },
+      beforeLayer,
+    );
 
-    addLayer({
-      id: layerIds.unvisitedOutline,
-      type: 'line',
-      source: sourceIds.unvisited,
-      paint: {
-        ...styles.unvisitedOutline,
-        'line-opacity': shouldShowCommunesOutlines()
-          ? styles.unvisitedOutline['line-opacity']
-          : 0
-      }
-    }, beforeLayer);
+    addLayer(
+      {
+        id: layerIds.unvisitedOutline,
+        type: "line",
+        source: sourceIds.unvisited,
+        paint: {
+          ...styles.unvisitedOutline,
+          "line-opacity": shouldShowCommunesOutlines()
+            ? styles.unvisitedOutline["line-opacity"]
+            : 0,
+        },
+      },
+      beforeLayer,
+    );
 
     if (SHOW_VISITED_COMMUNES) {
-      addLayer({
-        id: layerIds.visitedFill,
-        type: 'fill',
-        source: sourceIds.visited,
-        paint: styles.visitedFill
-      }, beforeLayer);
+      addLayer(
+        {
+          id: layerIds.visitedFill,
+          type: "fill",
+          source: sourceIds.visited,
+          paint: styles.visitedFill,
+        },
+        beforeLayer,
+      );
 
-      addLayer({
-        id: layerIds.visitedOutline,
-        type: 'line',
-        source: sourceIds.visited,
-        paint: styles.visitedOutline
-      }, beforeLayer);
+      addLayer(
+        {
+          id: layerIds.visitedOutline,
+          type: "line",
+          source: sourceIds.visited,
+          paint: styles.visitedOutline,
+        },
+        beforeLayer,
+      );
     }
   }
 
@@ -118,6 +138,7 @@
   function refreshCommunesStyles() {
     updateUserSummary();
     app.modules.plannedRoute?.render();
+
     if (!app.state.map) return;
 
     if (allLayersExist()) {
@@ -128,6 +149,7 @@
 
   async function refreshCommunesForCurrentZoom() {
     if (!app.state.map) return;
+
     if (!app.state.communesVisible) return;
     updateOutlineVisibility();
 
@@ -152,13 +174,13 @@
   }
 
   function toggleLayers(visible, refreshVisibleLayers = true) {
-    log.debug('Changing commune visibility', { visible });
+    log.debug("Changing commune visibility", { visible });
     app.state.communesVisible = visible;
-    const visibility = visible ? 'visible' : 'none';
+    const visibility = visible ? "visible" : "none";
 
     for (const layerId of activeCommunesLayerIds) {
       if (app.state.map && app.state.map.getLayer(layerId)) {
-        app.state.map.setLayoutProperty(layerId, 'visibility', visibility);
+        app.state.map.setLayoutProperty(layerId, "visibility", visibility);
       }
     }
 
@@ -175,42 +197,48 @@
     if (!app.state.map) return;
 
     const outlineOpacity = shouldShowCommunesOutlines()
-      ? styles.unvisitedOutline['line-opacity']
+      ? styles.unvisitedOutline["line-opacity"]
       : 0;
 
     if (app.state.map.getLayer(layerIds.unvisitedOutline)) {
-      app.state.map.setPaintProperty(
-        layerIds.unvisitedOutline,
-        'line-opacity',
-        outlineOpacity
-      );
+      app.state.map.setPaintProperty(layerIds.unvisitedOutline, "line-opacity", outlineOpacity);
     }
   }
 
   function updateToggleButton() {
-    const button = document.getElementById('zaliczgmine-toggle');
+    const button = document.getElementById("zaliczgmine-toggle");
+
     if (!button) return;
 
     const visible = app.state.communesVisible;
-    button.style.background = visible ? '#348b42' : '#b8c0ba';
-    button.setAttribute('aria-label', t('communes.boundaries'));
-    button.setAttribute('aria-checked', String(visible));
+    button.style.background = visible ? "#348b42" : "#b8c0ba";
+    button.setAttribute("aria-label", t("communes.boundaries"));
+    button.setAttribute("aria-checked", String(visible));
     button.title = visible ? t("communes.hideBoundaries") : t("communes.showBoundaries");
-    button.firstElementChild.style.transform = visible ? 'translateX(16px)' : 'translateX(0)';
+    button.firstElementChild.style.transform = visible ? "translateX(16px)" : "translateX(0)";
   }
 
   function updateUserSummary() {
-    const summary = document.getElementById('zaliczgmine-user-summary');
+    const summary = document.getElementById("zaliczgmine-user-summary");
+
     if (!summary) return;
 
-    const hasUser = app.state.visitedCommunesSource !== 'none';
-    const username = hasUser ? (app.state.username || `ID: ${app.state.userId}`) : globalThis.ZaliczGmineI18n.brand();
+    const hasUser = app.state.visitedCommunesSource !== "none";
+
+    const username = hasUser
+      ? app.state.username || `ID: ${app.state.userId}`
+      : globalThis.ZaliczGmineI18n.brand();
+
     const count = app.state.visitedCommunesIds.size;
-    summary.querySelector('[data-username]').textContent = username;
-    summary.querySelector('[data-count]').textContent = hasUser
-      ? t('communes.visitedCount', { count: count.toLocaleString(globalThis.ZaliczGmineI18n.language) })
+    summary.querySelector("[data-username]").textContent = username;
+    summary.querySelector("[data-count]").textContent = hasUser
+      ? t("communes.visitedCount", {
+          count: count.toLocaleString(globalThis.ZaliczGmineI18n.language),
+        })
       : t("account.selectInExtension");
-    summary.title = hasUser ? t('account.mapSummary', { username, count }) : globalThis.ZaliczGmineI18n.brand();
+    summary.title = hasUser
+      ? t("account.mapSummary", { username, count })
+      : globalThis.ZaliczGmineI18n.brand();
   }
 
   function addToggleButton() {
@@ -218,10 +246,10 @@
     const mapControls = site?.controlsContainer();
 
     // const mapControls = document.querySelector('.maplibregl-ctrl-top-left, .mapboxgl-ctrl-top-left');
-    if (!mapControls || document.getElementById('zaliczgmine-toggle')) return;
+    if (!mapControls || document.getElementById("zaliczgmine-toggle")) return;
 
-    const buttonContainer = document.createElement('div');
-    buttonContainer.className = 'maplibregl-ctrl';
+    const buttonContainer = document.createElement("div");
+    buttonContainer.className = "maplibregl-ctrl";
     buttonContainer.style.cssText = `
       display: flex; align-items: center; gap: 14px;
       box-sizing: border-box; max-width: min(280px, 70vw);
@@ -232,45 +260,48 @@
       pointer-events: auto;
     `;
 
-    const button = document.createElement('button');
-    button.id = 'zaliczgmine-toggle';
-    button.type = 'button';
-    button.setAttribute('role', 'switch');
-    button.setAttribute('aria-label', t("communes.boundaries"));
+    const button = document.createElement("button");
+    button.id = "zaliczgmine-toggle";
+    button.type = "button";
+    button.setAttribute("role", "switch");
+    button.setAttribute("aria-label", t("communes.boundaries"));
     button.style.cssText = `
       position: relative; flex: 0 0 40px; width: 40px; height: 24px;
       min-width: 40px; min-height: 24px; margin: 0; padding: 3px;
       border: 0; border-radius: 999px; cursor: pointer;
       transition: background 150ms ease;
     `;
-    const thumb = document.createElement('span');
-    thumb.setAttribute('aria-hidden', 'true');
+    const thumb = document.createElement("span");
+    thumb.setAttribute("aria-hidden", "true");
     thumb.style.cssText = `
       display: block; width: 18px; height: 18px; border-radius: 50%;
       background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
       transition: transform 150ms ease; pointer-events: none;
     `;
     button.appendChild(thumb);
-    button.addEventListener('focus', () => {
-      button.style.outline = '2px solid #246b31';
-      button.style.outlineOffset = '3px';
+    button.addEventListener("focus", () => {
+      button.style.outline = "2px solid #246b31";
+      button.style.outlineOffset = "3px";
     });
-    button.addEventListener('blur', () => { button.style.outline = ''; });
-    button.addEventListener('click', () => toggleLayers(!app.state.communesVisible));
+    button.addEventListener("blur", () => {
+      button.style.outline = "";
+    });
+    button.addEventListener("click", () => toggleLayers(!app.state.communesVisible));
 
-    const summary = document.createElement('div');
-    summary.id = 'zaliczgmine-user-summary';
-    summary.setAttribute('role', 'status');
-    summary.setAttribute('aria-live', 'polite');
+    const summary = document.createElement("div");
+    summary.id = "zaliczgmine-user-summary";
+    summary.setAttribute("role", "status");
+    summary.setAttribute("aria-live", "polite");
     summary.style.cssText = `
       min-width: 0; color: #28332b; font: 12px/1.5 Arial, sans-serif;
     `;
-    const name = document.createElement('div');
-    name.setAttribute('data-username', '');
-    name.style.cssText = 'font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;';
-    const count = document.createElement('div');
-    count.setAttribute('data-count', '');
-    count.style.cssText = 'font-size: 11px; color: #52705a;';
+    const name = document.createElement("div");
+    name.setAttribute("data-username", "");
+    name.style.cssText =
+      "font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;";
+    const count = document.createElement("div");
+    count.setAttribute("data-count", "");
+    count.style.cssText = "font-size: 11px; color: #52705a;";
     summary.appendChild(name);
     summary.appendChild(count);
 
@@ -285,7 +316,7 @@
     if (!app.state.map) return;
 
     while (!app.state.map.isStyleLoaded()) {
-      await new Promise(resolve => setTimeout(resolve, 250));
+      await new Promise((resolve) => setTimeout(resolve, 250));
     }
   }
 
@@ -293,8 +324,9 @@
     if (!app.state.map || styleObserverAttached) return;
 
     styleObserverAttached = true;
-    app.state.map.on('styledata', async () => {
+    app.state.map.on("styledata", async () => {
       await waitForStyleLoad();
+
       if (!app.state.polygons) return;
 
       if (allLayersExist()) {
@@ -311,25 +343,24 @@
     if (!app.state.map || zoomObserverAttached) return;
 
     let debounceId = null;
+
     const scheduleRefresh = () => {
       window.clearTimeout(debounceId);
-      debounceId = window.setTimeout(
-        refreshCommunesForCurrentZoom,
-        zoomConfig.debounceMs
-      );
+      debounceId = window.setTimeout(refreshCommunesForCurrentZoom, zoomConfig.debounceMs);
     };
 
     zoomObserverAttached = true;
-    app.state.map.on('zoomend', scheduleRefresh);
-    app.state.map.on('moveend', scheduleRefresh);
+    app.state.map.on("zoomend", scheduleRefresh);
+    app.state.map.on("moveend", scheduleRefresh);
   }
 
   function showNotification(message) {
-    const existing = document.getElementById('zaliczgmine-notification');
+    const existing = document.getElementById("zaliczgmine-notification");
+
     if (existing) existing.remove();
 
-    const notification = document.createElement('div');
-    notification.id = 'zaliczgmine-notification';
+    const notification = document.createElement("div");
+    notification.id = "zaliczgmine-notification";
     notification.textContent = message;
     notification.style.cssText = `
       position: fixed;
@@ -359,6 +390,6 @@
     setupZoomObserver,
     showNotification,
     toggleLayers,
-    waitForStyleLoad
+    waitForStyleLoad,
   };
 })(window.ZaliczGmine);

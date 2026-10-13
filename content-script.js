@@ -1,32 +1,36 @@
-(function() {
-  'use strict';
+(function () {
+  "use strict";
 
   const { t } = globalThis.ZaliczGmineI18n;
-  const log = globalThis.ZaliczGmineLogger.create('content-script');
+  const log = globalThis.ZaliczGmineLogger.create("content-script");
 
   const { MESSAGE } = globalThis.ZaliczGmineMessageProtocol;
+
   const pageScripts = [
-    'i18n.js',
-    'logger.js',
-    'message-protocol.js',
-    'config.js',
-    'modules/sites.js',
-    'modules/extension-bridge.js',
-    'modules/zaliczgmine-api.js',
-    'modules/map-finder.js',
-    'modules/communes-geometry.js',
-    'modules/communes-data.js',
-    'modules/map-layers.js',
-    'modules/route-geometry.js',
-    'modules/planned-route.js',
-    'lib/togeojson.js',
-    'modules/gpx.js',
-    'map-app.js'
+    "i18n.js",
+    "logger.js",
+    "message-protocol.js",
+    "config.js",
+    "modules/sites.js",
+    "modules/extension-bridge.js",
+    "modules/zaliczgmine-api.js",
+    "modules/map-finder.js",
+    "modules/communes-geometry.js",
+    "modules/communes-data.js",
+    "modules/map-layers.js",
+    "modules/route-geometry.js",
+    "modules/planned-route.js",
+    "lib/togeojson.js",
+    "modules/gpx.js",
+    "map-app.js",
   ];
+
   const { isSupportedPage } = globalThis.ZaliczGmineSites;
-  const languageReady = chrome.storage.local.get('language').then(settings => {
+
+  const languageReady = chrome.storage.local.get("language").then((settings) => {
     globalThis.ZaliczGmineI18n.setLanguage(settings.language);
   });
+
   let scriptsLoaded = false;
   let scriptsLoading = null;
   let lastPath = location.pathname;
@@ -42,39 +46,50 @@
   // }
 
   function isSupportedRoute() {
-    return isSupportedPage(window.location)
+    return isSupportedPage(window.location);
   }
 
   // get communes & visited communes using background.js as a bridge, because blockade cross-origin requests
-  window.addEventListener('message', (event) => {
+  window.addEventListener("message", (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
 
     if (event.data.type === MESSAGE.FETCH_REQUEST) {
       const { requestId, url, responseType } = event.data;
-      chrome.runtime.sendMessage({
-        type: MESSAGE.FETCH,
-        url,
-        responseType
-      }, (response) => {
-        window.postMessage({
-          type: MESSAGE.FETCH_RESPONSE,
-          requestId,
-          response,
-          error: chrome.runtime.lastError?.message
-        }, window.location.origin);
-      });
+      chrome.runtime.sendMessage(
+        {
+          type: MESSAGE.FETCH,
+          url,
+          responseType,
+        },
+        (response) => {
+          window.postMessage(
+            {
+              type: MESSAGE.FETCH_RESPONSE,
+              requestId,
+              response,
+              error: chrome.runtime.lastError?.message,
+            },
+            window.location.origin,
+          );
+        },
+      );
+
       return;
     }
 
     // storage
     if (event.data.type === MESSAGE.STORAGE_GET) {
       chrome.storage.local.get(event.data.keys || null, (result) => {
-        window.postMessage({
-          type: MESSAGE.STORAGE_RESPONSE,
-          requestId: event.data.requestId,
-          data: { ...result, resolvedLanguage: globalThis.ZaliczGmineI18n.language }
-        }, window.location.origin);
+        window.postMessage(
+          {
+            type: MESSAGE.STORAGE_RESPONSE,
+            requestId: event.data.requestId,
+            data: { ...result, resolvedLanguage: globalThis.ZaliczGmineI18n.language },
+          },
+          window.location.origin,
+        );
       });
+
       return;
     }
 
@@ -88,46 +103,55 @@
       sendResponse({
         success: false,
         connected: false,
-        error: t("extension.unsupportedPage")
+        error: t("extension.unsupportedPage"),
       });
+
       return false;
     }
 
-    log.debug('Forwarding command', { action: request.action });
+    log.debug("Forwarding command", { action: request.action });
     const scriptsReady = loadScripts();
     const requestId = Math.random().toString(36).slice(2);
 
     // setup listener for response
     const handler = (event) => {
       if (event.source !== window || event.origin !== window.location.origin) return;
+
       if (event.data.type !== MESSAGE.COMMAND_RESPONSE) return;
+
       if (event.data.requestId !== requestId) return;
 
-      window.removeEventListener('message', handler);
+      window.removeEventListener("message", handler);
       clearTimeout(timeoutId);
       sendResponse(event.data.response);
     };
-    window.addEventListener('message', handler);
+
+    window.addEventListener("message", handler);
 
     // send request
     // ACTION: GET_STATUS, TOGGLE_COMMUNES, RELOAD_COMMUNES, IMPORT_GPX, REMOVE_GPX
-    scriptsReady.then(() => {
-      window.postMessage({
-        type: MESSAGE.COMMAND,
-        requestId,
-        action: request.action,
-        data: request.data
-      }, window.location.origin);
-    }).catch((error) => {
-      window.removeEventListener('message', handler);
-      clearTimeout(timeoutId);
-      sendResponse({ success: false, error: error.message });
-    });
+    scriptsReady
+      .then(() => {
+        window.postMessage(
+          {
+            type: MESSAGE.COMMAND,
+            requestId,
+            action: request.action,
+            data: request.data,
+          },
+          window.location.origin,
+        );
+      })
+      .catch((error) => {
+        window.removeEventListener("message", handler);
+        clearTimeout(timeoutId);
+        sendResponse({ success: false, error: error.message });
+      });
 
     const timeoutId = setTimeout(() => {
-      log.warn('Command timed out', { action: request.action, requestId });
-      window.removeEventListener('message', handler);
-      sendResponse({ success: false, error: 'Timeout' });
+      log.warn("Command timed out", { action: request.action, requestId });
+      window.removeEventListener("message", handler);
+      sendResponse({ success: false, error: "Timeout" });
     }, 5000);
 
     return true;
@@ -135,7 +159,7 @@
 
   function injectScript(src) {
     return new Promise((resolve, reject) => {
-      const script = document.createElement('script');
+      const script = document.createElement("script");
       script.src = chrome.runtime.getURL(src);
       script.defer = true;
       script.onload = resolve;
@@ -146,24 +170,28 @@
 
   async function loadScripts() {
     if (scriptsLoaded) return;
+
     if (scriptsLoading) return scriptsLoading;
+
     if (!isSupportedRoute()) return;
 
     scriptsLoading = (async () => {
       await languageReady;
+
       for (const script of pageScripts) {
         await injectScript(script);
-        log.debug('Script loaded', { script });
+        log.debug("Script loaded", { script });
       }
+
       scriptsLoaded = true;
-      log.debug('Page scripts loaded');
+      log.debug("Page scripts loaded");
     })();
 
     try {
       await scriptsLoading;
     } catch (error) {
       scriptsLoading = null;
-      log.error('Could not load scripts', error);
+      log.error("Could not load scripts", error);
       throw error;
     }
   }
@@ -178,7 +206,7 @@
     setInterval(() => {
       if (location.pathname === lastPath) return;
       lastPath = location.pathname;
-      log.debug('Page changed', { supported: isSupportedRoute() });
+      log.debug("Page changed", { supported: isSupportedRoute() });
       loadScriptsIfSupported();
     }, 1000);
   }

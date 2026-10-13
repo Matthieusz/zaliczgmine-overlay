@@ -1,12 +1,25 @@
-(function(app) {
-  'use strict';
+import { Option, Predicate, Schema } from "effect";
+
+const Callable = Schema.declare(Predicate.isFunction);
+
+const MapMethods = Schema.Struct({
+  getCanvas: Callable,
+  getStyle: Callable,
+  getSource: Callable,
+  addSource: Callable,
+  on: Callable,
+  off: Callable,
+});
+
+(function (app) {
+  "use strict";
 
   const SEARCH_LIMITS = {
     ancestors: 8,
     depth: 14,
     objects: 5000,
     collectionItems: 32,
-    propertiesPerObject: 250
+    propertiesPerObject: 250,
   };
 
   function isVisibleCanvas(canvas) {
@@ -15,35 +28,44 @@
     const bounds = canvas.getBoundingClientRect();
     const style = window.getComputedStyle(canvas);
 
-    return bounds.width > 0 &&
+    return (
+      bounds.width > 0 &&
       bounds.height > 0 &&
-      style.display !== 'none' &&
-      style.visibility !== 'hidden';
+      style.display !== "none" &&
+      style.visibility !== "hidden"
+    );
   }
 
   function collectMapCanvases() {
-    return Array.from(document.getElementsByTagName('canvas'))
+    return Array.from(document.getElementsByTagName("canvas"))
       .filter(isVisibleCanvas)
-      .sort((a, b) => { // sort for largest area first
+      .sort((a, b) => {
+        // sort for largest area first
         const areaA = a.clientWidth * a.clientHeight;
         const areaB = b.clientWidth * b.clientHeight;
+
         return areaB - areaA;
       });
   }
 
   function exposesMapInterface(candidate, canvas) {
-    if (!candidate || (typeof candidate !== 'object' && typeof candidate !== 'function')) {
-      return false;
-    }
+    if (!Predicate.isObjectKeyword(candidate)) return false;
 
     try {
-      const requiredMethods = ['getCanvas', 'getStyle', 'getSource', 'addSource', 'on', 'off'];
-      if (!requiredMethods.every(method => typeof candidate[method] === 'function')) {
-        return false;
-      }
+      const methods = Schema.decodeUnknownOption(MapMethods)({
+        getCanvas: candidate.getCanvas,
+        getStyle: candidate.getStyle,
+        getSource: candidate.getSource,
+        addSource: candidate.addSource,
+        on: candidate.on,
+        off: candidate.off,
+      });
 
-      return candidate.getCanvas() === canvas;
-    } catch (error) {
+      if (Option.isNone(methods)) return false;
+
+      // Preserve the map instance as receiver, including prototype-backed methods.
+      return methods.value.getCanvas.call(candidate) === canvas;
+    } catch {
       return false;
     }
   }
@@ -58,7 +80,7 @@
 
     try {
       descriptors = Object.getOwnPropertyDescriptors(object);
-    } catch (error) {
+    } catch {
       return [];
     }
 
@@ -69,10 +91,12 @@
       const descriptor = descriptors[name];
 
       // skip getters/setters
-      if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) continue;
+      if (!Object.prototype.hasOwnProperty.call(descriptor, "value")) continue;
 
       const value = descriptor.value;
-      if (value && (typeof value === 'object' || typeof value === 'function')) {
+
+      // Graph traversal admits objects and functions; primitives cannot own a map.
+      if (Predicate.isObjectKeyword(value)) {
         values.push(value);
       }
     }
@@ -94,7 +118,7 @@
 
   function locateOwnerOfCanvas(canvas) {
     const seen = new WeakSet();
-    const pending = rootsForCanvas(canvas).map(value => ({ value, depth: 0 }));
+    const pending = rootsForCanvas(canvas).map((value) => ({ value, depth: 0 }));
     let nextEntry = 0;
     let inspected = 0;
 
@@ -108,6 +132,7 @@
       inspected++;
 
       if (exposesMapInterface(candidate, canvas)) return candidate;
+
       if (entry.depth >= SEARCH_LIMITS.depth) continue;
 
       for (const child of ownDataValues(candidate)) {
@@ -121,9 +146,11 @@
   async function findMap() {
     for (const canvas of collectMapCanvases()) {
       const map = locateOwnerOfCanvas(canvas);
+
       if (!map) continue;
 
       app.state.map = map;
+
       return map;
     }
 

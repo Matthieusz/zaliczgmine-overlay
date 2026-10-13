@@ -1,14 +1,22 @@
-(function(app) {
-  'use strict';
+(function (app) {
+  "use strict";
 
   const { t } = globalThis.ZaliczGmineI18n;
-  const log = globalThis.ZaliczGmineLogger.create('map-app');
+  const log = globalThis.ZaliczGmineLogger.create("map-app");
 
   const { ACTION, MESSAGE } = globalThis.ZaliczGmineMessageProtocol;
-  const { loadVisitedCommunes, reloadVisitedCommunes, fetchPolygons,
-          activatePolygons, getPolygonRequestForMap } = app.modules.communesData;
+
+  const {
+    loadVisitedCommunes,
+    reloadVisitedCommunes,
+    fetchPolygons,
+    activatePolygons,
+    getPolygonRequestForMap,
+  } = app.modules.communesData;
+
   const { getTracksSummary, loadStoredGpx, removeGpx, renderGpx, setGpx } = app.modules.gpx;
   const { findMap } = app.modules.mapFinder;
+
   const {
     addCommunesLayers,
     addToggleButton,
@@ -18,21 +26,24 @@
     setupZoomObserver,
     showNotification,
     toggleLayers,
-    waitForStyleLoad
+    waitForStyleLoad,
   } = app.modules.mapLayers;
 
-  const languageReady = app.modules.extensionBridge.getStorage(['language']).then(settings => {
+  const languageReady = app.modules.extensionBridge.getStorage(["language"]).then((settings) => {
     globalThis.ZaliczGmineI18n.setLanguage(settings.resolvedLanguage || settings.language);
   });
+
   async function handleCommand(action, data = {}) {
     await languageReady;
-    log.debug('Handling command', { action });
+    log.debug("Handling command", { action });
+
     if (action === ACTION.TOGGLE_COMMUNES) {
       if (!app.state.map) {
         return { success: false, error: t("map.notFound") };
       }
 
       toggleLayers(!app.state.communesVisible);
+
       return { success: true, visible: app.state.communesVisible };
     }
 
@@ -45,7 +56,7 @@
           success: true,
           visitedCommunesCount: app.state.visitedCommunesIds.size,
           userId: app.state.userId,
-          visitedCommunesSource: app.state.visitedCommunesSource
+          visitedCommunesSource: app.state.visitedCommunesSource,
         };
       } catch (error) {
         return { success: false, error: error.message };
@@ -55,6 +66,7 @@
     if (action === ACTION.IMPORT_GPX) {
       try {
         const gpx = setGpx(data.text, data.name, data.id);
+
         return { success: true, gpx };
       } catch (error) {
         return { success: false, error: error.message };
@@ -63,6 +75,7 @@
 
     if (action === ACTION.REMOVE_GPX) {
       removeGpx(data.id);
+
       return { success: true, gpxTracks: getTracksSummary() };
     }
 
@@ -74,60 +87,69 @@
         userId: app.state.userId,
         visitedCommunesSource: app.state.visitedCommunesSource,
         gpxTracks: getTracksSummary(),
-        totalLoaded: app.state.polygons ? app.state.polygons.length : 0
+        totalLoaded: app.state.polygons ? app.state.polygons.length : 0,
       };
     }
 
     return { success: false, error: t("extension.unknownAction") };
   }
 
-  window.addEventListener('message', async (event) => {
+  window.addEventListener("message", async (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
+
     if (event.data.type !== MESSAGE.COMMAND) return;
 
     try {
       const response = await handleCommand(event.data.action, event.data.data);
-      window.postMessage({
-        type: MESSAGE.COMMAND_RESPONSE,
-        requestId: event.data.requestId,
-        response
-      }, window.location.origin);
+      window.postMessage(
+        {
+          type: MESSAGE.COMMAND_RESPONSE,
+          requestId: event.data.requestId,
+          response,
+        },
+        window.location.origin,
+      );
     } catch (error) {
-      window.postMessage({
-        type: MESSAGE.COMMAND_RESPONSE,
-        requestId: event.data.requestId,
-        response: { success: false, error: error.message }
-      }, window.location.origin);
+      window.postMessage(
+        {
+          type: MESSAGE.COMMAND_RESPONSE,
+          requestId: event.data.requestId,
+          response: { success: false, error: error.message },
+        },
+        window.location.origin,
+      );
     }
   });
 
   async function init() {
     await languageReady;
-    log.debug('Starting initialization');
+    log.debug("Starting initialization");
     let communesLoadError = null;
 
     try {
       await loadVisitedCommunes();
     } catch (error) {
       communesLoadError = error;
-      log.error('Could not fetch visited communes:', error);
+      log.error("Could not fetch visited communes:", error);
     }
 
     for (let attempt = 0; attempt < 120; attempt++) {
       const map = await findMap();
+
       if (!map) {
-        if (attempt % 20 === 0) log.debug('Waiting for map', { attempt: attempt + 1 });
-        await new Promise(resolve => setTimeout(resolve, 500));
+        if (attempt % 20 === 0) log.debug("Waiting for map", { attempt: attempt + 1 });
+        await new Promise((resolve) => setTimeout(resolve, 500));
         continue;
       }
 
-      log.debug('Map found', { attempt: attempt + 1 });
+      log.debug("Map found", { attempt: attempt + 1 });
       await waitForStyleLoad();
-      log.debug('Map style ready');
+      log.debug("Map style ready");
       app.modules.plannedRoute.start();
 
       const initialRequest = getPolygonRequestForMap(map);
       const polygons = await fetchPolygons(initialRequest);
+
       if (!polygons) return;
 
       activatePolygons(initialRequest, polygons);
@@ -135,23 +157,27 @@
       addToggleButton();
       setupStyleChangeObserver();
       setupZoomObserver();
+
       try {
         await loadStoredGpx();
       } catch (error) {
-        log.error('Could not load saved GPX:', error);
-      }
-      refreshCommunesForCurrentZoom();
-      if (communesLoadError) {
-        showNotification(t('communes.visitedLoadError', { error: communesLoadError.message }));
-      } else {
-        showNotification(t('communes.loadedSummary', { count: app.state.visitedCommunesIds.size }));
+        log.error("Could not load saved GPX:", error);
       }
 
-      log.debug('Extension ready');
+      refreshCommunesForCurrentZoom();
+
+      if (communesLoadError) {
+        showNotification(t("communes.visitedLoadError", { error: communesLoadError.message }));
+      } else {
+        showNotification(t("communes.loadedSummary", { count: app.state.visitedCommunesIds.size }));
+      }
+
+      log.debug("Extension ready");
+
       return;
     }
 
-    log.debug('Map not found');
+    log.debug("Map not found");
   }
 
   window.zaliczGmine = app.state;

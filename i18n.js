@@ -1,9 +1,9 @@
-(function(global) {
-  'use strict';
+(function (global) {
+  "use strict";
 
   // English is the fallback language
   const messages = {
-    "en": {
+    en: {
       "app.subtitle": "Map overlay for Komoot and VeloPlanner",
       "communes.visitedLabel": "Visited communes",
       "map.checking": "Checking...",
@@ -74,9 +74,9 @@
       "language.automatic": "Automatic (browser)",
       "app.title": "{brand} — route planners",
       "language.saved": "Language saved. Reopen this popup and refresh the planner to apply it.",
-      "language.saveError": "Could not save the language"
+      "language.saveError": "Could not save the language",
     },
-    "pl": {
+    pl: {
       "app.subtitle": "Nakładka mapy dla Komoot i VeloPlanner",
       "communes.visitedLabel": "Zaliczonych gmin",
       "map.checking": "Sprawdzanie...",
@@ -146,36 +146,48 @@
       "language.title": "Język",
       "language.automatic": "Automatyczny (przeglądarka)",
       "app.title": "{brand} — planery tras",
-      "language.saved": "Język zapisany. Otwórz ponownie panel i odśwież planer, aby zastosować zmianę.",
-      "language.saveError": "Nie udało się zapisać języka"
-    }
+      "language.saved":
+        "Język zapisany. Otwórz ponownie panel i odśwież planer, aby zastosować zmianę.",
+      "language.saveError": "Nie udało się zapisać języka",
+    },
   };
+
   Object.values(messages).forEach(Object.freeze);
   Object.freeze(messages);
   let language = resolveLanguage();
 
   function resolveLanguage(preference, browserLanguage = global.navigator?.language) {
     if (Object.hasOwn(messages, preference)) return preference;
-    const browserLocale = (browserLanguage || '').toLowerCase().split('-')[0];
-    return Object.hasOwn(messages, browserLocale) ? browserLocale : 'en';
+    const browserLocale = (browserLanguage || "").toLowerCase().split("-")[0];
+
+    return Object.hasOwn(messages, browserLocale) ? browserLocale : "en";
   }
 
   function t(key, values = {}) {
     const template = messages[language]?.[key] ?? messages.en[key] ?? key;
+
     return template.replace(/\{(\w+)\}/g, (match, name) =>
-      String(name === 'brand' ? brand() : (values[name] ?? match)));
+      String(name === "brand" ? brand() : (values[name] ?? match)),
+    );
   }
 
   function brand() {
-    return language === 'pl' ? 'ZaliczGmine.pl' : 'TickMyRide.com';
+    return language === "pl" ? "ZaliczGmine.pl" : "TickMyRide.com";
   }
 
   global.ZaliczGmineI18n = {
-    t, brand, resolveLanguage, messages,
-    get language() { return language; },
-    get apiBase() { return language === 'pl' ? 'https://zaliczgmine.pl/api/' : 'https://tickmyride.com/api/'; },
+    t,
+    brand,
+    resolveLanguage,
+    messages,
+    get language() {
+      return language;
+    },
+    get apiBase() {
+      return language === "pl" ? "https://zaliczgmine.pl/api/" : "https://tickmyride.com/api/";
+    },
     setLanguage(preference, browserLanguage) {
       language = resolveLanguage(preference, browserLanguage);
-    }
+    },
   };
 })(globalThis);
