@@ -330,13 +330,19 @@ test("failed route analysis waits for manual retry or a changed route", async ()
   try {
     expect(f.notifications[0]?.message).toBe("route.highlightingUnavailable");
     expect(f.observed).toHaveLength(1);
+    expect(f.uploads.at(-1)).toEqual({ type: "FeatureCollection", features: [] });
     expect(f.layers.size).toBe(2);
     f.emit("sourcedata", "planner");
     await f.flush();
     expect(f.observed).toHaveLength(1);
     f.recover();
-    await f.notifications[0]?.retry();
+    const retry = f.notifications[0]?.retry;
+
+    if (!retry) throw new Error("Missing route retry");
+    await retry();
     expect(f.observed).toHaveLength(2);
+    expect(f.notifications).toHaveLength(1);
+    expect(f.uploads.at(-1)).toEqual({ type: "FeatureCollection", features: [] });
     f.setSource({ _data: route(5) });
     f.emit("sourcedata", "planner");
     await f.flush();
