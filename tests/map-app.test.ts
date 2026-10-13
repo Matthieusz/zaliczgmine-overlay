@@ -21,7 +21,7 @@ async function fixture(boundariesFail = false, visitedFail = false) {
   const polygons = ["polygon"];
 
   const state: StartupState = {
-    map: {},
+    map: { on() {}, off() {} },
     visitedCommunesIds: new Set(),
     polygons: [],
   };
@@ -29,7 +29,12 @@ async function fixture(boundariesFail = false, visitedFail = false) {
   let visitedLoads = 0;
   let layersAvailable = false;
   let routeStarted = false;
-  let initialize: (() => Promise<void>) | undefined;
+  let initialized = () => {};
+
+  const ready = new Promise<void>((resolve) => {
+    initialized = resolve;
+  });
+
   const noop = () => {};
 
   const app = {
@@ -86,6 +91,8 @@ async function fixture(boundariesFail = false, visitedFail = false) {
   };
 
   runInNewContext(await bundle.outputs[0].text(), {
+    AbortController,
+    queueMicrotask,
     TextEncoder,
     TextDecoder,
     window: { ZaliczGmine: app, addEventListener: noop },
@@ -94,15 +101,20 @@ async function fixture(boundariesFail = false, visitedFail = false) {
       t: (key: string, values?: { error?: string; count?: number }) =>
         values ? `${key}:${JSON.stringify(values)}` : key,
     },
-    ZaliczGmineLogger: { create: () => ({ debug: noop, error: noop }) },
-    ZaliczGmineMessageProtocol: { ACTION: {}, MESSAGE: {} },
-    setTimeout(callback: () => Promise<void>) {
-      initialize = callback;
+    ZaliczGmineLogger: {
+      create: () => ({
+        debug: (message: string) => {
+          if (message === "Extension ready") initialized();
+        },
+        error: noop,
+      }),
     },
+    ZaliczGmineMessageProtocol: { ACTION: {}, MESSAGE: {} },
+    setTimeout,
+    clearTimeout,
   });
 
-  if (!initialize) throw new Error("Startup was not scheduled");
-  await initialize();
+  await ready;
 
   return {
     state,

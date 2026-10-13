@@ -78,7 +78,7 @@ async function loadContent(supported: boolean) {
     window: page,
     location,
     document: {
-      createElement: () => ({}),
+      createElement: () => ({ remove() {} }),
       head: {
         appendChild: (script: { src: string; onload: () => void }) => {
           scriptUrls.push(script.src);

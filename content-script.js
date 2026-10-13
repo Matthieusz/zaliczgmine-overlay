@@ -1,4 +1,4 @@
-import { Effect, Fiber, FiberSet, Layer, Predicate } from "effect";
+import { Effect, Fiber, FiberSet, Layer, Predicate, Schedule } from "effect";
 import { ChromeStorage, chromeStorageLayer } from "./src/chrome-storage.ts";
 import { ChromeRuntime, chromeRuntimeLayer } from "./src/chrome-runtime.ts";
 import { extensionUrl } from "./src/chrome-extension-url.ts";
@@ -56,6 +56,7 @@ const contentLifetime = Effect.gen(function* () {
   );
 
   let scriptsLoaded = false;
+  const loadedScripts = new Set();
   let scriptsLoading = null;
   let lastPath = location.pathname;
 
@@ -207,8 +208,35 @@ const contentLifetime = Effect.gen(function* () {
       const script = document.createElement("script");
       script.src = Effect.runSync(extensionUrl(chrome.runtime, src));
       script.defer = true;
-      script.onload = resolve;
-      script.onerror = () => reject(new Error(`Could not load ${src}`));
+
+      const cleanup = () => {
+        script.onload = script.onerror = null;
+        lifetime.signal.removeEventListener("abort", onAbort);
+        script.remove();
+      };
+
+      const onAbort = () => {
+        cleanup();
+        reject(new DOMException("Aborted", "AbortError"));
+      };
+
+      script.onload = () => {
+        cleanup();
+        resolve();
+      };
+
+      script.onerror = () => {
+        cleanup();
+        reject(new Error(`Could not load ${src}`));
+      };
+
+      if (lifetime.signal.aborted) {
+        onAbort();
+
+        return;
+      }
+
+      lifetime.signal.addEventListener("abort", onAbort, { once: true });
       (document.head || document.documentElement).appendChild(script);
     });
   }
@@ -224,7 +252,9 @@ const contentLifetime = Effect.gen(function* () {
       await Effect.runPromise(Fiber.join(languageReady));
 
       for (const script of pageScripts) {
+        if (loadedScripts.has(script)) continue;
         await injectScript(script);
+        loadedScripts.add(script);
         log.debug("Script loaded", { script });
       }
 
@@ -243,21 +273,21 @@ const contentLifetime = Effect.gen(function* () {
 
   function loadScriptsIfSupported() {
     if (isSupportedRoute()) {
-      loadScripts();
+      runStorage(Effect.tryPromise(() => loadScripts()).pipe(Effect.catch(() => Effect.void)));
     }
   }
 
   function watchRouteChanges() {
-    setInterval(() => {
+    return Effect.sync(() => {
       if (location.pathname === lastPath) return;
       lastPath = location.pathname;
       log.debug("Page changed", { supported: isSupportedRoute() });
       loadScriptsIfSupported();
-    }, 1000);
+    }).pipe(Effect.repeat(Schedule.spaced("1 second")), Effect.forkScoped);
   }
 
   loadScriptsIfSupported();
-  watchRouteChanges();
+  yield* watchRouteChanges();
 
   yield* Effect.never;
 });

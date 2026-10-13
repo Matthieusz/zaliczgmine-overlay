@@ -1,9 +1,13 @@
 import { Effect, Result } from "effect";
+import { awaitMapReady } from "./src/map-lifetime.ts";
 import { loadInitialMap, startupStep } from "./src/map-startup.ts";
 import { failureReply, MapNotReady } from "./src/user-errors.ts";
 
 (function (app) {
   "use strict";
+
+  const lifetime = new AbortController();
+  const shutdown = () => lifetime.abort();
 
   const { t } = globalThis.ZaliczGmineI18n;
   const log = globalThis.ZaliczGmineLogger.create("map-app");
@@ -97,7 +101,7 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
     return { success: false, error: "extension.unknownAction" };
   }
 
-  window.addEventListener("message", async (event) => {
+  const onCommand = async (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
 
     if (event.data.type !== MESSAGE.COMMAND) return;
@@ -122,23 +126,21 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
         window.location.origin,
       );
     }
-  });
+  };
 
   async function init() {
     await languageReady;
     log.debug("Starting initialization");
 
-    for (let attempt = 0; attempt < 120; attempt++) {
-      const map = await findMap();
+    {
+      const map = await Effect.runPromise(awaitMapReady(Effect.promise(findMap), "discovery"), {
+        signal: lifetime.signal,
+      });
 
-      if (!map) {
-        if (attempt % 20 === 0) log.debug("Waiting for map", { attempt: attempt + 1 });
-        await new Promise((resolve) => setTimeout(resolve, 500));
-        continue;
-      }
-
-      log.debug("Map found", { attempt: attempt + 1 });
-      await waitForStyleLoad();
+      if (lifetime.signal.aborted) return;
+      map.on("remove", shutdown);
+      log.debug("Map found");
+      await waitForStyleLoad(lifetime.signal);
       log.debug("Map style ready");
       app.modules.plannedRoute.start();
 
@@ -152,7 +154,7 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
                 ? Effect.succeed(visitedResult.success)
                 : startupStep(loadVisitedCommunes),
               startupStep(async () => {
-                await waitForStyleLoad();
+                await waitForStyleLoad(lifetime.signal);
                 const request = getPolygonRequestForMap(map);
                 const polygons = await fetchPolygons(request, true);
 
@@ -161,6 +163,7 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
             ),
           );
 
+          if (lifetime.signal.aborted) return;
           visitedResult = outcome.visited;
           log.debug("Initial map data", { status: outcome.status });
           refreshCommunesStyles();
@@ -193,6 +196,7 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
             Result.isFailure(outcome.visited) ? loadStartupData : undefined,
           );
         } catch (error) {
+          if (lifetime.signal.aborted) return;
           log.error("Initial map setup failed", error);
           showNotification(t("extension.unexpectedError"), loadStartupData);
         }
@@ -209,19 +213,47 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
         showNotification(t("gpx.someTracksUnavailable"), undefined, "gpx");
       }
 
+      if (lifetime.signal.aborted) return;
       await loadStartupData();
 
       log.debug("Extension ready");
 
       return;
     }
-
-    log.debug("Map not found");
   }
 
   window.zaliczGmine = app.state;
   window.zaliczGmineToggle = () => toggleLayers(!app.state.communesVisible);
   window.zaliczGmineRenderGpx = renderGpx;
 
-  setTimeout(init, 0);
+  Effect.runFork(
+    Effect.gen(function* () {
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          window.addEventListener("unload", shutdown, { once: true });
+          window.addEventListener("message", onCommand);
+        }),
+        () =>
+          Effect.sync(() => {
+            lifetime.abort();
+            window.removeEventListener("unload", shutdown);
+            window.removeEventListener("message", onCommand);
+            app.state.map?.off("remove", shutdown);
+            app.modules.mapLayers.stop();
+            app.modules.plannedRoute.stop();
+            app.state.map = null;
+          }),
+      );
+      yield* Effect.promise(init);
+      yield* Effect.never;
+    }).pipe(
+      Effect.scoped,
+      Effect.catchDefect((error) =>
+        Effect.sync(() => {
+          if (!lifetime.signal.aborted) log.error("Map initialization failed", error);
+        }),
+      ),
+    ),
+    { signal: lifetime.signal },
+  );
 })(window.ZaliczGmine);

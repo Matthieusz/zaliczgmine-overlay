@@ -1,4 +1,5 @@
-import { Match } from "effect";
+import { Effect, Match } from "effect";
+import { awaitMapReady } from "../src/map-lifetime.ts";
 
 (function (app) {
   "use strict";
@@ -19,6 +20,7 @@ import { Match } from "effect";
   let styleObserverAttached = false;
   let zoomObserverAttached = false;
   let restoringStyle = false;
+  const observerCleanups = [];
 
   const renderedCommunes = new WeakMap();
 
@@ -177,7 +179,13 @@ import { Match } from "effect";
     if (request.cacheKey === app.state.polygonsKey && app.state.polygons) return;
     const polygons = await fetchPolygons(request);
 
-    if (!app.state.communesVisible || !polygons || requestId !== latestPolygonRequestId) return;
+    if (
+      !app.state.map ||
+      !app.state.communesVisible ||
+      !polygons ||
+      requestId !== latestPolygonRequestId
+    )
+      return;
 
     activatePolygons(request, polygons);
 
@@ -205,7 +213,9 @@ import { Match } from "effect";
     app.modules.plannedRoute?.setVisible(visible);
 
     if (visible && refreshVisibleLayers) {
-      refreshCommunesForCurrentZoom();
+      refreshCommunesForCurrentZoom().catch((error) =>
+        log.warn("Could not refresh boundaries", error),
+      );
     }
   }
 
@@ -328,12 +338,21 @@ import { Match } from "effect";
     updateUserSummary();
   }
 
-  async function waitForStyleLoad() {
-    if (!app.state.map) return;
+  function waitForStyleLoad(signal) {
+    return Effect.runPromise(
+      awaitMapReady(
+        Effect.sync(() => (app.state.map?.isStyleLoaded() ? true : null)),
+        "style",
+      ),
+      { signal },
+    );
+  }
 
-    while (!app.state.map.isStyleLoaded()) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
+  function stop() {
+    latestPolygonRequestId++;
+
+    for (const cleanup of observerCleanups.splice(0)) cleanup();
+    styleObserverAttached = zoomObserverAttached = false;
   }
 
   function setupStyleChangeObserver() {
@@ -357,6 +376,11 @@ import { Match } from "effect";
     app.state.map.on("styledata", restoreLayers);
     // Sources may finish loading after the last styledata event.
     app.state.map.on("idle", restoreLayers);
+    const map = app.state.map;
+    observerCleanups.push(() => {
+      map.off("styledata", restoreLayers);
+      map.off("idle", restoreLayers);
+    });
   }
 
   function setupZoomObserver() {
@@ -366,12 +390,22 @@ import { Match } from "effect";
 
     const scheduleRefresh = () => {
       window.clearTimeout(debounceId);
-      debounceId = window.setTimeout(refreshCommunesForCurrentZoom, zoomConfig.debounceMs);
+      debounceId = window.setTimeout(() => {
+        refreshCommunesForCurrentZoom().catch((error) =>
+          log.warn("Could not refresh boundaries", error),
+        );
+      }, zoomConfig.debounceMs);
     };
 
     zoomObserverAttached = true;
     app.state.map.on("zoomend", scheduleRefresh);
     app.state.map.on("moveend", scheduleRefresh);
+    const map = app.state.map;
+    observerCleanups.push(() => {
+      window.clearTimeout(debounceId);
+      map.off("zoomend", scheduleRefresh);
+      map.off("moveend", scheduleRefresh);
+    });
   }
 
   function showNotification(message, retry, channel) {
@@ -441,5 +475,6 @@ import { Match } from "effect";
     showNotification,
     toggleLayers,
     waitForStyleLoad,
+    stop,
   };
 })(window.ZaliczGmine);
