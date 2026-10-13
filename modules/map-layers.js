@@ -16,6 +16,7 @@
   let latestPolygonRequestId = 0;
   let styleObserverAttached = false;
   let zoomObserverAttached = false;
+  let restoringStyle = false;
 
   function setMapboxSource(sourceId, geojsonData) {
     const source = app.state.map.getSource(sourceId);
@@ -68,14 +69,11 @@
 
     if (!app.state.map || !app.state.polygons) return;
 
-    const { convertToGeoJSON } = app.modules.communesData;
-
     const beforeLayer = app.state.map.getLayer(layerIds.routeFill)
       ? layerIds.routeFill
       : findInsertBeforeLayer();
 
-    setMapboxSource(sourceIds.visited, convertToGeoJSON(app.state.polygons, true));
-    setMapboxSource(sourceIds.unvisited, convertToGeoJSON(app.state.polygons, false));
+    updateCommunesSources();
 
     removeLayers();
 
@@ -131,7 +129,11 @@
     if (!app.state.map || !app.state.polygons) return;
 
     const { convertToGeoJSON } = app.modules.communesData;
-    setMapboxSource(sourceIds.visited, convertToGeoJSON(app.state.polygons, true));
+
+    if (SHOW_VISITED_COMMUNES) {
+      setMapboxSource(sourceIds.visited, convertToGeoJSON(app.state.polygons, true));
+    }
+
     setMapboxSource(sourceIds.unvisited, convertToGeoJSON(app.state.polygons, false));
   }
 
@@ -155,10 +157,10 @@
 
     const { getPolygonRequestForMap, fetchPolygons, activatePolygons } = app.modules.communesData;
     const request = getPolygonRequestForMap(app.state.map);
+    // Even reuse invalidates a pending result for a viewport we have left.
+    const requestId = ++latestPolygonRequestId;
 
     if (request.cacheKey === app.state.polygonsKey && app.state.polygons) return;
-
-    const requestId = ++latestPolygonRequestId;
     const polygons = await fetchPolygons(request);
 
     if (!app.state.communesVisible || !polygons || requestId !== latestPolygonRequestId) return;
@@ -323,20 +325,24 @@
   function setupStyleChangeObserver() {
     if (!app.state.map || styleObserverAttached) return;
 
-    styleObserverAttached = true;
-    app.state.map.on("styledata", async () => {
-      await waitForStyleLoad();
+    const restoreLayers = () => {
+      // Style mutations emit styledata too. Restore only missing layers, and
+      // let the next ready event handle loading instead of starting pollers.
+      if (restoringStyle || !app.state.map.isStyleLoaded() || !app.state.polygons) return;
+      restoringStyle = true;
 
-      if (!app.state.polygons) return;
-
-      if (allLayersExist()) {
-        toggleLayers(app.state.communesVisible, false);
-      } else {
-        addCommunesLayers();
+      try {
+        if (!allLayersExist()) addCommunesLayers();
+        app.modules.gpx.renderGpx();
+      } finally {
+        restoringStyle = false;
       }
+    };
 
-      app.modules.gpx.renderGpx();
-    });
+    styleObserverAttached = true;
+    app.state.map.on("styledata", restoreLayers);
+    // Sources may finish loading after the last styledata event.
+    app.state.map.on("idle", restoreLayers);
   }
 
   function setupZoomObserver() {

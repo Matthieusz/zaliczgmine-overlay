@@ -7,6 +7,9 @@
   const { layerIds, sourceIds, styles } = app.config;
   const { getStorage } = app.modules.extensionBridge;
   let tracks = [];
+  let revision = 0;
+  let renderedRevision = -1;
+  let renderedSource = null;
 
   function parseGpx(gpxText) {
     const doc = new DOMParser().parseFromString(gpxText, "application/xml");
@@ -71,17 +74,22 @@
   function renderGpx() {
     if (!app.state.map) return;
 
-    const data = tracks.length > 0 ? getGpxFeatureCollection() : getEmptyFeatureCollection();
+    let source = app.state.map.getSource(sourceIds.gpx);
 
-    const source = app.state.map.getSource(sourceIds.gpx);
+    // Layer restoration does not require serializing unchanged tracks again.
+    // Source identity also invalidates this cache after a planner style reset.
+    if (!source || source !== renderedSource || revision !== renderedRevision) {
+      const data = tracks.length > 0 ? getGpxFeatureCollection() : getEmptyFeatureCollection();
 
-    if (source) {
-      source.setData(data);
-    } else {
-      app.state.map.addSource(sourceIds.gpx, {
-        type: "geojson",
-        data,
-      });
+      if (source) {
+        source.setData(data);
+      } else {
+        app.state.map.addSource(sourceIds.gpx, { type: "geojson", data });
+        source = app.state.map.getSource(sourceIds.gpx);
+      }
+
+      renderedSource = source;
+      renderedRevision = revision;
     }
 
     if (!app.state.map.getLayer(layerIds.gpxCasing)) {
@@ -112,6 +120,13 @@
   }
 
   function setGpx(gpxText, name, id) {
+    const summary = storeGpx(gpxText, name, id);
+    renderGpx();
+
+    return summary;
+  }
+
+  function storeGpx(gpxText, name, id) {
     if (!gpxText || !gpxText.trim()) {
       throw new Error("Plik GPX jest pusty");
     }
@@ -142,7 +157,7 @@
       tracks.push(track);
     }
 
-    renderGpx();
+    revision++;
 
     return {
       id: track.id,
@@ -162,6 +177,7 @@
         tracks = [];
       }
 
+      if (tracks.length !== tracksCount) revision++;
       renderGpx();
 
       return;
@@ -169,6 +185,8 @@
 
     removeGpxLayers();
     tracks = [];
+    revision++;
+    renderedSource = null;
   }
 
   async function loadStoredGpx() {
@@ -179,12 +197,13 @@
       : [];
 
     tracks = [];
+    revision++;
 
     for (const track of storedTracks) {
       if (!track || !track.text) continue;
 
       try {
-        setGpx(track.text, track.name, track.id);
+        storeGpx(track.text, track.name, track.id);
       } catch (error) {
         log.error(`Skipped GPX "${track.name || "track.gpx"}":`, error);
       }

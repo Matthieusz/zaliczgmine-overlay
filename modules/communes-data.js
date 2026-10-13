@@ -6,6 +6,7 @@
 
   const polygonsByRequest = new Map();
   const pendingPolygonRequests = new Map();
+  let activePolygonRequest = null;
   const { zoom: zoomConfig } = app.config;
   const { fetchResource, getStorage, setStorage } = app.modules.extensionBridge;
 
@@ -117,7 +118,26 @@
       };
     }
 
-    const bounds = normalizeBounds(map.getBounds());
+    const viewport = map.getBounds();
+    const activeBounds = activePolygonRequest?.bounds;
+
+    // The fetched area includes padding. Keep it until the visible viewport
+    // leaves that area, instead of fetching another overlapping set per pan.
+    if (
+      app.state.polygons &&
+      activePolygonRequest &&
+      activePolygonRequest.cacheKey === app.state.polygonsKey &&
+      activePolygonRequest.apiZoom === apiZoom &&
+      activeBounds &&
+      viewport.getNorth() <= activeBounds.north &&
+      viewport.getEast() <= activeBounds.east &&
+      viewport.getSouth() >= activeBounds.south &&
+      viewport.getWest() >= activeBounds.west
+    ) {
+      return activePolygonRequest;
+    }
+
+    const bounds = normalizeBounds(viewport);
     const cacheBounds = getCacheBounds(bounds, apiZoom);
 
     return {
@@ -240,6 +260,7 @@
       apiZoom: request.apiZoom,
       count: polygons.length,
     });
+    activePolygonRequest = request;
     app.state.polygonsKey = request.cacheKey;
     app.state.polygons = polygons;
   }
