@@ -1,4 +1,7 @@
-import { NetworkError, InvalidApiData, apiFailure, remoteFailure } from "../src/user-errors.ts";
+import { Effect } from "effect";
+import { chromeRuntimeLayer } from "../src/chrome-runtime.ts";
+import { fetchRuntimeJson } from "../src/runtime-fetch.ts";
+import { InvalidApiData, apiFailure } from "../src/user-errors.ts";
 
 (function (global) {
   "use strict";
@@ -6,28 +9,9 @@ import { NetworkError, InvalidApiData, apiFailure, remoteFailure } from "../src/
   const log = globalThis.ZaliczGmineLogger.create("zaliczgmine-api");
 
   function fetchViaRuntime(url) {
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(
-        {
-          type: global.ZaliczGmineMessageProtocol.MESSAGE.FETCH,
-          url,
-          responseType: "json",
-        },
-        (response) => {
-          const runtimeError = chrome.runtime.lastError;
-
-          if (runtimeError || !response?.success) {
-            reject(
-              runtimeError ? new NetworkError({ reason: "unavailable" }) : remoteFailure(response),
-            );
-
-            return;
-          }
-
-          resolve(response.data);
-        },
-      );
-    });
+    return Effect.runPromise(
+      fetchRuntimeJson(url).pipe(Effect.provide(chromeRuntimeLayer(chrome.runtime))),
+    );
   }
 
   // Transport returns parsed JSON and rejects with optional code/http metadata.

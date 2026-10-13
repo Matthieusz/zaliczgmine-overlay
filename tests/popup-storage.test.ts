@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
+import type { Effect } from "effect";
+import type { fetchRuntimeJson } from "../src/runtime-fetch.ts";
+import type { ChromeRuntimeApi } from "../src/chrome-runtime.ts";
 import type { ChromeStorageApi } from "../src/chrome-storage.ts";
 
 type Values = Parameters<ChromeStorageApi["local"]["set"]>[0];
 
 type ChangeListener = Parameters<ChromeStorageApi["onChanged"]["addListener"]>[0];
+
+type ApiFetch = (url: string) => Promise<Effect.Success<ReturnType<typeof fetchRuntimeJson>>>;
 
 class PopupElement {
   value = "";
@@ -40,6 +45,10 @@ async function loadPopup() {
   const listeners = new Set<ChangeListener>();
   const windowListeners = new Map<string, () => void>();
   const failures = { language: false, account: false, gpx: false };
+  const runtimeRequests: Array<Parameters<ChromeRuntimeApi["sendMessage"]>[0]> = [];
+  const runtimeCallbacks: Array<Parameters<ChromeRuntimeApi["sendMessage"]>[1]> = [];
+  let apiFetch: ApiFetch | undefined;
+  let runtimeErrorReads = 0;
 
   const state = {
     language: "pl",
@@ -140,7 +149,16 @@ async function loadPopup() {
       },
       runtime: {
         get lastError() {
+          runtimeErrorReads++;
+
           return lastError;
+        },
+        sendMessage(
+          request: Parameters<ChromeRuntimeApi["sendMessage"]>[0],
+          callback: Parameters<ChromeRuntimeApi["sendMessage"]>[1],
+        ) {
+          runtimeRequests.push(request);
+          runtimeCallbacks.push(callback);
         },
       },
       tabs: {
@@ -171,9 +189,11 @@ async function loadPopup() {
         REMOVE_GPX: "removeGpx",
       },
     },
-    createZaliczGmineApi: () => ({
-      searchUsers: () => Promise.resolve([{ id: 84, username: "New rider" }]),
-    }),
+    createZaliczGmineApi: (fetchResource: ApiFetch) => {
+      apiFetch = fetchResource;
+
+      return { searchUsers: () => Promise.resolve([{ id: 84, username: "New rider" }]) };
+    },
     AbortController,
     TextEncoder,
     TextDecoder,
@@ -190,6 +210,21 @@ async function loadPopup() {
     listeners,
     failures,
     state,
+    runtimeRequests,
+    get runtimeErrorReads() {
+      return runtimeErrorReads;
+    },
+    fetch(url: string) {
+      if (!apiFetch) throw new Error("Popup API transport missing");
+
+      return apiFetch(url);
+    },
+    completeRuntime<Input>(reply: Input, failed = false) {
+      lastError = failed ? { message: "private runtime error" } : undefined;
+
+      for (const callback of runtimeCallbacks.splice(0)) callback(reply);
+      lastError = undefined;
+    },
     unload: async () => {
       windowListeners.get("unload")?.();
       await closed;
@@ -257,4 +292,35 @@ test("popup preserves the legacy GPX removal callback policy on lastError", asyn
   } finally {
     await popup.unload();
   }
+});
+
+test("popup API calls use the existing runtime fetch payload and return decoded success data", async () => {
+  const popup = await loadPopup();
+
+  try {
+    const request = popup.fetch("https://example.test/api/");
+    expect(popup.runtimeRequests).toEqual([
+      { type: "ZALICZGMINE_FETCH", url: "https://example.test/api/", responseType: "json" },
+    ]);
+    popup.completeRuntime({ success: true, data: { opaque: [1, 2] } });
+    expect(await request).toEqual({ opaque: [1, 2] });
+  } finally {
+    await popup.unload();
+  }
+});
+
+test("popup unload interrupts runtime requests while late callbacks still consume lastError", async () => {
+  const popup = await loadPopup();
+  const reads = popup.runtimeErrorReads;
+  const request = popup.fetch("https://example.test/api/");
+
+  const settled = request.then(
+    () => "success",
+    () => "interrupted",
+  );
+
+  await popup.unload();
+  expect(await settled).toBe("interrupted");
+  popup.completeRuntime(undefined, true);
+  expect(popup.runtimeErrorReads).toBe(reads + 1);
 });

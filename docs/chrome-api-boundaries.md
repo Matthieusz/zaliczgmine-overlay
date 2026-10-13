@@ -51,6 +51,18 @@ Existing popup save-failure keys and GPX callback policy remain unchanged. GPX w
 
 Tests exercise injected storage capabilities and the actual bundled content/popup entrypoints: storage keys/defaults, safe errors, malformed boundaries, late callbacks/promises, scoped listener cleanup, page response envelopes, popup change filtering, and save-failure presentation. Browser-level smoke testing remains necessary with `dist/` loaded as an unpacked extension.
 
+## Runtime messaging slice
+
+`src/chrome-runtime.ts` owns callback fetch messaging and scoped runtime listeners. It parses outgoing `ZALICZGMINE_FETCH` requests with the existing schema and reads `lastError` inside callbacks, including late callbacks after interruption. Chrome invocation failures become the existing `NetworkError({ reason: "unavailable" })`; browser error text is discarded. Transport replies stay opaque so the content bridge can forward them unchanged. `src/runtime-fetch.ts` parses success envelopes and reconstructs allowlisted remote failures for API callers; unknown failures remain defects.
+
+`src/background-listener.ts` owns the background listener and request fibers. Unrelated messages still return synchronous `false`; malformed fetch messages still reply synchronously with `api.invalidRequest` and return `false`; valid requests return literal `true`. Requests retain their existing fetch/retry policy and 30-second bound. Defects produce one safe unexpected-failure reply. Closing the workflow scope removes the listener and interrupts/aborts pending fetches, without sending a cancellation response. Chrome itself owns service-worker termination; no asynchronous shutdown event is assumed.
+
+The content workflow now owns its runtime/page listeners and runtime request fibers. Unsupported commands retain their synchronous reply and `false` return. Supported commands return `true` and use `src/content-command.ts` to await script readiness and a same-window, same-origin, correlated page reply. The existing five-second timeout covers script readiness as well as response waiting; completion, timeout, defects, and interruption remove the per-request listener. Timeout/unload no longer allows a late script-ready promise to send a command or produce a second response. Script injection, route watching, and URL resolution otherwise remain legacy code. Malformed command envelopes now receive the safe `api.invalidRequest` failure rather than throwing from the listener; unknown action names still reach the page for its existing action policy.
+
+Popup API fetches use the runtime workflow through the popup-owned fiber set. Standalone `createZaliczGmineApi` callers keep their promise interface and injected transport seam. Fetch message names/payloads, opaque successful data, and existing user-facing failure keys remain unchanged. Malformed outgoing page fetches produce the same invalid-request response envelope without Chrome I/O.
+
+Tests cover injected runtime capabilities, bundled background/content/popup entrypoints, synchronous channel decisions, opaque replies, malformed input, safe failures, late callbacks, scope cleanup, background fetch abortion, and deterministic five-/thirty-second timeouts. Browser-level smoke testing remains necessary with `dist/` loaded as an unpacked extension.
+
 ## Next slice
 
-Runtime messaging/listeners, tabs, and extension URL lookup remain unchanged. Migrate those separately, preserving the background/content `sendResponse` and literal `return true` channel lifecycle; do not make Chrome listeners themselves asynchronous functions.
+Tabs and extension URL lookup remain unchanged. Migrate those separately; leave unrelated legacy JavaScript alone.

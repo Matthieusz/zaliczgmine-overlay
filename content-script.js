@@ -1,6 +1,8 @@
-import { Effect, Fiber, FiberSet } from "effect";
+import { Effect, Fiber, FiberSet, Layer, Predicate } from "effect";
 import { ChromeStorage, chromeStorageLayer } from "./src/chrome-storage.ts";
-import { failureReply, NetworkError } from "./src/user-errors.ts";
+import { ChromeRuntime, chromeRuntimeLayer } from "./src/chrome-runtime.ts";
+import { forwardCommand } from "./src/content-command.ts";
+import { failureReply } from "./src/user-errors.ts";
 
 const lifetime = new AbortController();
 
@@ -39,6 +41,7 @@ const contentLifetime = Effect.gen(function* () {
   const { isSupportedPage } = globalThis.ZaliczGmineSites;
 
   const storage = yield* ChromeStorage;
+  const runtime = yield* ChromeRuntime;
   const runStorage = yield* FiberSet.makeRuntime();
 
   const languageReady = runStorage(
@@ -70,28 +73,41 @@ const contentLifetime = Effect.gen(function* () {
   }
 
   // get communes & visited communes using background.js as a bridge, because blockade cross-origin requests
-  window.addEventListener("message", (event) => {
+  const onPageMessage = (event) => {
     if (event.source !== window || event.origin !== window.location.origin) return;
+
+    if (!event.data) return;
 
     if (event.data.type === MESSAGE.FETCH_REQUEST) {
       const { requestId, url, responseType } = event.data;
-      chrome.runtime.sendMessage(
-        {
-          type: MESSAGE.FETCH,
-          url,
-          responseType,
-        },
-        (response) => {
-          window.postMessage(
-            {
-              type: MESSAGE.FETCH_RESPONSE,
-              requestId,
-              response,
-              error: chrome.runtime.lastError ? "extension.noResponse" : undefined,
-            },
-            window.location.origin,
-          );
-        },
+      const request = { type: MESSAGE.FETCH, url };
+
+      if (responseType !== undefined) request.responseType = responseType;
+
+      runStorage(
+        runtime.sendFetch(request).pipe(
+          Effect.match({
+            onSuccess: (response) =>
+              window.postMessage(
+                { type: MESSAGE.FETCH_RESPONSE, requestId, response, error: undefined },
+                window.location.origin,
+              ),
+            onFailure: (error) =>
+              window.postMessage(
+                {
+                  type: MESSAGE.FETCH_RESPONSE,
+                  requestId,
+                  response: Predicate.isTagged(error, "NetworkError")
+                    ? undefined
+                    : failureReply(error),
+                  error: Predicate.isTagged(error, "NetworkError")
+                    ? "extension.noResponse"
+                    : undefined,
+                },
+                window.location.origin,
+              ),
+          }),
+        ),
       );
 
       return;
@@ -141,9 +157,14 @@ const contentLifetime = Effect.gen(function* () {
           ),
       );
     }
-  });
+  };
 
-  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  yield* Effect.acquireRelease(
+    Effect.sync(() => window.addEventListener("message", onPageMessage)),
+    () => Effect.sync(() => window.removeEventListener("message", onPageMessage)),
+  );
+
+  yield* runtime.listen((request, sendResponse) => {
     if (!isSupportedRoute()) {
       sendResponse({
         success: false,
@@ -154,50 +175,28 @@ const contentLifetime = Effect.gen(function* () {
       return false;
     }
 
-    log.debug("Forwarding command", { action: request.action });
-    const scriptsReady = loadScripts();
+    log.debug("Forwarding command", { action: request?.action });
     const requestId = Math.random().toString(36).slice(2);
 
-    // setup listener for response
-    const handler = (event) => {
-      if (event.source !== window || event.origin !== window.location.origin) return;
-
-      if (event.data.type !== MESSAGE.COMMAND_RESPONSE) return;
-
-      if (event.data.requestId !== requestId) return;
-
-      window.removeEventListener("message", handler);
-      clearTimeout(timeoutId);
-      sendResponse(event.data.response);
-    };
-
-    window.addEventListener("message", handler);
-
-    // send request
-    // ACTION: GET_STATUS, TOGGLE_COMMUNES, RELOAD_COMMUNES, IMPORT_GPX, REMOVE_GPX
-    scriptsReady
-      .then(() => {
-        window.postMessage(
-          {
-            type: MESSAGE.COMMAND,
-            requestId,
-            action: request.action,
-            data: request.data,
-          },
-          window.location.origin,
-        );
-      })
-      .catch((error) => {
-        window.removeEventListener("message", handler);
-        clearTimeout(timeoutId);
-        sendResponse(failureReply(error));
-      });
-
-    const timeoutId = setTimeout(() => {
-      log.warn("Command timed out", { action: request.action, requestId });
-      window.removeEventListener("message", handler);
-      sendResponse(failureReply(new NetworkError({ reason: "timeout" })));
-    }, 5000);
+    runStorage(
+      forwardCommand(
+        request,
+        Effect.promise(() => loadScripts()),
+        window,
+        requestId,
+      ).pipe(
+        Effect.tapError((error) =>
+          Effect.sync(() => {
+            if (Predicate.isTagged(error, "NetworkError") && error.reason === "timeout") {
+              log.warn("Command timed out", { action: request.action, requestId });
+            }
+          }),
+        ),
+        Effect.match({ onSuccess: (response) => response, onFailure: failureReply }),
+        Effect.catchDefect((error) => Effect.succeed(failureReply(error))),
+        Effect.tap((response) => Effect.sync(() => sendResponse(response))),
+      ),
+    );
 
     return true;
   });
@@ -265,7 +264,12 @@ const contentLifetime = Effect.gen(function* () {
 Effect.runFork(
   contentLifetime.pipe(
     Effect.scoped,
-    Effect.provide(chromeStorageLayer(chrome.storage, chrome.runtime)),
+    Effect.provide(
+      Layer.merge(
+        chromeStorageLayer(chrome.storage, chrome.runtime),
+        chromeRuntimeLayer(chrome.runtime),
+      ),
+    ),
   ),
   { signal: lifetime.signal },
 );

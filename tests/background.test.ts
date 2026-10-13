@@ -94,3 +94,23 @@ test("background keeps Chrome's response channel open for a parsed fetch", async
 
   expect(reply).toEqual({ success: true, data: { ok: true } });
 });
+
+test("background defects respond once with the existing safe unexpected-failure reply", async () => {
+  const listener = await loadBackground(async () => {
+    throw new Error("private transport defect");
+  });
+
+  const replies: FetchReply[] = [];
+
+  const reply = await new Promise<FetchReply>((resolve) => {
+    expect(
+      listener({ type: "ZALICZGMINE_FETCH", url: "x" }, {}, (response: FetchReply) => {
+        replies.push(response);
+        resolve(response);
+      }),
+    ).toBe(true);
+  });
+
+  expect(reply).toEqual(failureReply(undefined));
+  expect(replies).toHaveLength(1);
+});

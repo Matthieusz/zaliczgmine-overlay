@@ -1,5 +1,7 @@
-import { Effect, Fiber, FiberSet } from "effect";
+import { Effect, Fiber, FiberSet, Layer } from "effect";
 import { ChromeStorage, chromeStorageLayer } from "../src/chrome-storage.ts";
+import { chromeRuntimeLayer } from "../src/chrome-runtime.ts";
+import { fetchRuntimeJson } from "../src/runtime-fetch.ts";
 import { failureReply, remoteErrorMessageKey } from "../src/user-errors.ts";
 
 const popupLifetime = Effect.fn("Popup.lifetime")(function* (lifetime) {
@@ -18,7 +20,11 @@ const popupLifetime = Effect.fn("Popup.lifetime")(function* (lifetime) {
   const { t } = globalThis.ZaliczGmineI18n;
   const log = globalThis.ZaliczGmineLogger.create("popup");
   const { ACTION } = globalThis.ZaliczGmineMessageProtocol;
-  const api = globalThis.createZaliczGmineApi();
+
+  const api = globalThis.createZaliczGmineApi((url) =>
+    Effect.runPromise(Fiber.join(runStorage(fetchRuntimeJson(url)))),
+  );
+
   const visitedCommunesCountEl = document.getElementById("visitedCommunesCount");
   const toggleBtn = document.getElementById("toggleBtn");
   const selectedUserEl = document.getElementById("selectedUser");
@@ -484,7 +490,12 @@ document.addEventListener("DOMContentLoaded", function () {
   Effect.runFork(
     popupLifetime(lifetime).pipe(
       Effect.scoped,
-      Effect.provide(chromeStorageLayer(chrome.storage, chrome.runtime)),
+      Effect.provide(
+        Layer.merge(
+          chromeStorageLayer(chrome.storage, chrome.runtime),
+          chromeRuntimeLayer(chrome.runtime),
+        ),
+      ),
     ),
     { signal: lifetime.signal },
   );
