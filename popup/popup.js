@@ -1,6 +1,7 @@
 import { Effect, Fiber, FiberSet, Layer } from "effect";
 import { ChromeStorage, chromeStorageLayer } from "../src/chrome-storage.ts";
 import { chromeRuntimeLayer } from "../src/chrome-runtime.ts";
+import { ChromeTabs, chromeTabsLayer } from "../src/chrome-tabs.ts";
 import { fetchRuntimeJson } from "../src/runtime-fetch.ts";
 import { failureReply, remoteErrorMessageKey } from "../src/user-errors.ts";
 
@@ -13,6 +14,7 @@ const popupLifetime = Effect.fn("Popup.lifetime")(function* (lifetime) {
 
   const i18n = globalThis.ZaliczGmineI18n;
   const storage = yield* ChromeStorage;
+  const tabs = yield* ChromeTabs;
   const runStorage = yield* FiberSet.makeRuntime();
   const settings = yield* storage.getPromise("language");
   i18n.setLanguage(settings.language);
@@ -448,14 +450,15 @@ const popupLifetime = Effect.fn("Popup.lifetime")(function* (lifetime) {
 
   function sendMessageToContentScript(message, callback) {
     log.debug("Sending command", { action: message.action });
-    chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
-      if (tabs[0]) {
-        chrome.tabs.sendMessage(tabs[0].id, message, function (response) {
-          if (chrome.runtime.lastError) {
-            log.warn("Tab did not respond", chrome.runtime.lastError);
+    runStorage(
+      tabs.sendCommand(message).pipe(
+        Effect.match({
+          onFailure: () => {
+            log.warn("Tab did not respond");
 
             if (callback) callback(null);
-          } else {
+          },
+          onSuccess: (response) => {
             log.debug("Command response", {
               action: message.action,
               success: response?.success,
@@ -463,12 +466,10 @@ const popupLifetime = Effect.fn("Popup.lifetime")(function* (lifetime) {
             });
 
             if (callback) callback(response);
-          }
-        });
-      } else {
-        if (callback) callback(null);
-      }
-    });
+          },
+        }),
+      ),
+    );
   }
 
   function showStatus(message, type) {
@@ -491,9 +492,10 @@ document.addEventListener("DOMContentLoaded", function () {
     popupLifetime(lifetime).pipe(
       Effect.scoped,
       Effect.provide(
-        Layer.merge(
+        Layer.mergeAll(
           chromeStorageLayer(chrome.storage, chrome.runtime),
           chromeRuntimeLayer(chrome.runtime),
+          chromeTabsLayer(chrome.tabs, chrome.runtime),
         ),
       ),
     ),

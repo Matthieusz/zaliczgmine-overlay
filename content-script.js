@@ -1,6 +1,7 @@
 import { Effect, Fiber, FiberSet, Layer, Predicate } from "effect";
 import { ChromeStorage, chromeStorageLayer } from "./src/chrome-storage.ts";
 import { ChromeRuntime, chromeRuntimeLayer } from "./src/chrome-runtime.ts";
+import { extensionUrl } from "./src/chrome-extension-url.ts";
 import { forwardCommand } from "./src/content-command.ts";
 import { failureReply } from "./src/user-errors.ts";
 
@@ -204,7 +205,7 @@ const contentLifetime = Effect.gen(function* () {
   function injectScript(src) {
     return new Promise((resolve, reject) => {
       const script = document.createElement("script");
-      script.src = chrome.runtime.getURL(src);
+      script.src = Effect.runSync(extensionUrl(chrome.runtime, src));
       script.defer = true;
       script.onload = resolve;
       script.onerror = () => reject(new Error(`Could not load ${src}`));

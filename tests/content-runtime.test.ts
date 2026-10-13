@@ -26,6 +26,8 @@ async function loadContent(supported: boolean) {
   const requests: Array<Parameters<ChromeRuntimeApi["sendMessage"]>[0]> = [];
   const pending: Array<() => void> = [];
   const posts: unknown[] = [];
+  const lookupPaths: string[] = [];
+  const scriptUrls: string[] = [];
   let initialized = () => {};
 
   let onCommand: ((command: typeof Command.Type) => void) | undefined;
@@ -77,7 +79,12 @@ async function loadContent(supported: boolean) {
     location,
     document: {
       createElement: () => ({}),
-      head: { appendChild: (script: { onload: () => void }) => script.onload() },
+      head: {
+        appendChild: (script: { src: string; onload: () => void }) => {
+          scriptUrls.push(script.src);
+          script.onload();
+        },
+      },
     },
     chrome: {
       storage: { local: { get: () => Promise.resolve({ language: "pl" }) } },
@@ -87,7 +94,11 @@ async function loadContent(supported: boolean) {
 
           return lastError;
         },
-        getURL: (src: string) => "chrome-extension://test/" + src,
+        getURL: (src: string) => {
+          lookupPaths.push(src);
+
+          return "chrome-extension://test/" + src;
+        },
         sendMessage(
           request: Parameters<ChromeRuntimeApi["sendMessage"]>[0],
           callback: Parameters<ChromeRuntimeApi["sendMessage"]>[1],
@@ -144,6 +155,8 @@ async function loadContent(supported: boolean) {
 
   return {
     posts,
+    lookupPaths,
+    scriptUrls,
     requests,
     pending,
     runtimeListeners,
@@ -196,6 +209,45 @@ test("content runtime preserves synchronous unsupported replies and removes the 
   await setImmediate();
   expect(page.runtimeListeners.size).toBe(0);
   expect(page.listeners.get("message")?.size).toBe(0);
+});
+
+test("content resolves and injects the existing script list in order only on supported pages", async () => {
+  const unsupported = await loadContent(false);
+
+  try {
+    expect(unsupported.lookupPaths).toEqual([]);
+    expect(unsupported.scriptUrls).toEqual([]);
+  } finally {
+    unsupported.unload();
+  }
+
+  const page = await loadContent(true);
+
+  try {
+    expect(page.lookupPaths).toEqual([
+      "i18n.js",
+      "logger.js",
+      "message-protocol.js",
+      "config.js",
+      "modules/sites.js",
+      "modules/extension-bridge.js",
+      "modules/zaliczgmine-api.js",
+      "modules/map-finder.js",
+      "modules/communes-geometry.js",
+      "modules/communes-data.js",
+      "modules/map-layers.js",
+      "modules/route-geometry.js",
+      "modules/planned-route.js",
+      "lib/togeojson.js",
+      "modules/gpx.js",
+      "map-app.js",
+    ]);
+    expect(page.scriptUrls).toEqual(
+      page.lookupPaths.map((path) => "chrome-extension://test/" + path),
+    );
+  } finally {
+    page.unload();
+  }
 });
 
 test("content keeps supported channels open, forwards correlated command replies unchanged, and rejects malformed commands safely", async () => {

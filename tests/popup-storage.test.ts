@@ -4,12 +4,20 @@ import type { Effect } from "effect";
 import type { fetchRuntimeJson } from "../src/runtime-fetch.ts";
 import type { ChromeRuntimeApi } from "../src/chrome-runtime.ts";
 import type { ChromeStorageApi } from "../src/chrome-storage.ts";
+import type { ChromeTabsApi } from "../src/chrome-tabs.ts";
 
 type Values = Parameters<ChromeStorageApi["local"]["set"]>[0];
 
 type ChangeListener = Parameters<ChromeStorageApi["onChanged"]["addListener"]>[0];
 
 type ApiFetch = (url: string) => Promise<Effect.Success<ReturnType<typeof fetchRuntimeJson>>>;
+
+interface TabState {
+  available: boolean;
+  fail: boolean;
+  hold: boolean;
+  reply: unknown;
+}
 
 class PopupElement {
   value = "";
@@ -47,6 +55,13 @@ async function loadPopup() {
   const failures = { language: false, account: false, gpx: false };
   const runtimeRequests: Array<Parameters<ChromeRuntimeApi["sendMessage"]>[0]> = [];
   const runtimeCallbacks: Array<Parameters<ChromeRuntimeApi["sendMessage"]>[1]> = [];
+  const tabQueries: Array<Parameters<ChromeTabsApi["query"]>[0]> = [];
+
+  const tabMessages: Array<{ id: number; message: Parameters<ChromeTabsApi["sendMessage"]>[1] }> =
+    [];
+
+  const tabCallbacks: Array<() => void> = [];
+  const tab: TabState = { available: true, fail: false, hold: false, reply: { connected: false } };
   let apiFetch: ApiFetch | undefined;
   let runtimeErrorReads = 0;
 
@@ -162,15 +177,28 @@ async function loadPopup() {
         },
       },
       tabs: {
-        query(_query: chrome.tabs.QueryInfo, callback: (tabs: Array<{ id: number }>) => void) {
-          callback([{ id: 1 }]);
+        query(
+          query: Parameters<ChromeTabsApi["query"]>[0],
+          callback: Parameters<ChromeTabsApi["query"]>[1],
+        ) {
+          tabQueries.push(query);
+          callback(tab.available ? [{ id: 1 }] : []);
         },
         sendMessage(
-          _id: number,
-          _message: Values,
-          callback: (response: { connected: false }) => void,
+          id: number,
+          message: Parameters<ChromeTabsApi["sendMessage"]>[1],
+          callback: Parameters<ChromeTabsApi["sendMessage"]>[2],
         ) {
-          callback({ connected: false });
+          tabMessages.push({ id, message });
+
+          const complete = () => {
+            lastError = tab.fail ? { message: "private tab error" } : undefined;
+            callback(tab.reply);
+            lastError = undefined;
+          };
+
+          if (tab.hold) tabCallbacks.push(complete);
+          else complete();
         },
       },
     },
@@ -185,6 +213,7 @@ async function loadPopup() {
     ZaliczGmineMessageProtocol: {
       ACTION: {
         GET_STATUS: "getStatus",
+        TOGGLE_COMMUNES: "toggleCommunes",
         RELOAD_COMMUNES: "reloadVisitedCommunes",
         REMOVE_GPX: "removeGpx",
       },
@@ -211,6 +240,13 @@ async function loadPopup() {
     failures,
     state,
     runtimeRequests,
+    tabQueries,
+    tabMessages,
+    tabCallbacks,
+    tab,
+    setTabReply<Input>(input: Input) {
+      tab.reply = input;
+    },
     get runtimeErrorReads() {
       return runtimeErrorReads;
     },
@@ -307,6 +343,47 @@ test("popup API calls use the existing runtime fetch payload and return decoded 
   } finally {
     await popup.unload();
   }
+});
+
+test("popup tab commands preserve payloads, successful replies, and null fallback presentation", async () => {
+  const popup = await loadPopup();
+
+  try {
+    expect(popup.tabQueries).toEqual([{ active: true, currentWindow: true }]);
+    expect(popup.tabMessages).toEqual([{ id: 1, message: { action: "getStatus" } }]);
+    popup.setTabReply({ success: true, visible: true, extra: { opaque: 42 } });
+    await popup.element("toggleBtn").trigger("click");
+    expect(popup.tabMessages[1]).toEqual({ id: 1, message: { action: "toggleCommunes" } });
+    expect(popup.element("toggleBtn").textContent).toBe("communes.hide");
+    expect(popup.element("status").textContent).toBe("communes.nowVisible");
+
+    popup.tab.fail = true;
+    await popup.element("toggleBtn").trigger("click");
+    expect(popup.element("status").textContent).toBe("map.connectionError");
+    popup.tab.fail = false;
+    popup.tab.available = false;
+    const sent = popup.tabMessages.length;
+    await popup.element("toggleBtn").trigger("click");
+    expect(popup.tabMessages).toHaveLength(sent);
+    expect(popup.element("status").textContent).toBe("map.connectionError");
+  } finally {
+    await popup.unload();
+  }
+});
+
+test("popup unload prevents late tab replies from updating UI but still consumes lastError", async () => {
+  const popup = await loadPopup();
+  popup.tab.hold = true;
+  popup.tab.fail = true;
+  await popup.element("toggleBtn").trigger("click");
+  expect(popup.tabCallbacks).toHaveLength(1);
+  const reads = popup.runtimeErrorReads;
+  const status = popup.element("status").textContent;
+  await popup.unload();
+
+  for (const complete of popup.tabCallbacks) complete();
+  expect(popup.runtimeErrorReads).toBe(reads + 1);
+  expect(popup.element("status").textContent).toBe(status);
 });
 
 test("popup unload interrupts runtime requests while late callbacks still consume lastError", async () => {
