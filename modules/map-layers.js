@@ -18,14 +18,28 @@
   let zoomObserverAttached = false;
   let restoringStyle = false;
 
-  function setMapboxSource(sourceId, geojsonData) {
-    const source = app.state.map.getSource(sourceId);
+  const renderedCommunes = new WeakMap();
+
+  function setMapboxSource(sourceId, filterVisited) {
+    let source = app.state.map.getSource(sourceId);
+    const { polygons, visitedCommunesIds } = app.state;
+    const previous = source && renderedCommunes.get(source);
+
+    // Both collections are replaced by communes-data, not mutated in place.
+    // Source identity invalidates the snapshot after a planner style reset.
+    if (previous?.polygons === polygons && previous.visitedCommunesIds === visitedCommunesIds)
+      return;
+
+    const data = app.modules.communesData.convertToGeoJSON(polygons, filterVisited);
 
     if (source) {
-      source.setData(geojsonData);
+      source.setData(data);
     } else {
-      app.state.map.addSource(sourceId, { type: "geojson", data: geojsonData });
+      app.state.map.addSource(sourceId, { type: "geojson", data });
+      source = app.state.map.getSource(sourceId);
     }
+
+    renderedCommunes.set(source, { polygons, visitedCommunesIds });
   }
 
   function findInsertBeforeLayer() {
@@ -128,13 +142,11 @@
   function updateCommunesSources() {
     if (!app.state.map || !app.state.polygons) return;
 
-    const { convertToGeoJSON } = app.modules.communesData;
-
     if (SHOW_VISITED_COMMUNES) {
-      setMapboxSource(sourceIds.visited, convertToGeoJSON(app.state.polygons, true));
+      setMapboxSource(sourceIds.visited, true);
     }
 
-    setMapboxSource(sourceIds.unvisited, convertToGeoJSON(app.state.polygons, false));
+    setMapboxSource(sourceIds.unvisited, false);
   }
 
   function refreshCommunesStyles() {

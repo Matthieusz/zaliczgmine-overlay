@@ -16,6 +16,7 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
   let revision = 0;
   let readRevision = 0;
   let lastLines = null;
+  let lastRouteSource = null;
   let matches = [];
   let renderedItems = null;
   let renderedSource = null;
@@ -73,7 +74,8 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
   }
 
   async function readLines() {
-    const source = watchedMap?.getSource(sourceId);
+    const source = watchedMap?.getSource(sourceId) || null;
+    lastRouteSource = source;
 
     if (!source) return [];
 
@@ -211,7 +213,10 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
   function onStyleData() {
     if (rendering || !watchedMap?.isStyleLoaded()) return;
     render();
-    scheduleRefresh();
+
+    // Overlay/style mutations do not change the route. A replacement planner
+    // source must still be read even if its sourcedata event was missed.
+    if ((watchedMap.getSource(sourceId) || null) !== lastRouteSource) scheduleRefresh();
   }
 
   function setVisible(visible) {
@@ -227,6 +232,7 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
     if (watchedMap) {
       watchedMap.off("sourcedata", onSourceData);
       watchedMap.off("styledata", onStyleData);
+      watchedMap.off("idle", onStyleData);
       watchedMap.off("remove", stop);
     }
 
@@ -235,7 +241,7 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
     watchedMap = null;
     revision++;
     readRevision++;
-    lastLines = renderedItems = renderedSource = null;
+    lastLines = lastRouteSource = renderedItems = renderedSource = null;
     matches = [];
     app.state.routeCommunesIds = new Set();
   }
@@ -250,6 +256,8 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
     watchedMap = app.state.map;
     watchedMap.on("sourcedata", onSourceData);
     watchedMap.on("styledata", onStyleData);
+    // The new style may become ready only after its final styledata event.
+    watchedMap.on("idle", onStyleData);
     watchedMap.on("remove", stop);
     void refresh();
   }

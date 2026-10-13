@@ -323,6 +323,45 @@ test("account changes update only the visible polygon source", async () => {
   expect(f.sources.get("zaliczgmine-unvisited-source")?.data.features[0]?.properties.id).toBe(1);
 });
 
+test("unchanged commune refreshes do not upload data again", async () => {
+  const f = await fixture();
+  f.rendering.addCommunesLayers();
+  f.uploads.length = 0;
+
+  for (let i = 0; i < 50; i++) f.rendering.refreshCommunesStyles();
+  expect(f.uploads).toHaveLength(0);
+});
+
+test("missing commune layers are restored without uploading unchanged polygons", async () => {
+  const f = await fixture();
+  f.rendering.addCommunesLayers();
+  f.gpx.renderGpx();
+  f.rendering.setupStyleChangeObserver();
+  f.layers.delete("zaliczgmine-communes");
+  f.uploads.length = 0;
+
+  await f.styleEvent();
+  expect(f.layers.has("zaliczgmine-communes")).toBe(true);
+  expect(f.uploads).toHaveLength(0);
+});
+
+test("replacing polygons or their source invalidates the commune upload cache", async () => {
+  const f = await fixture();
+  f.rendering.addCommunesLayers();
+  f.uploads.length = 0;
+  f.app.state.polygons = f.app.state.polygons.filter((item) => item.i === 1);
+  f.rendering.refreshCommunesStyles();
+  f.rendering.refreshCommunesStyles();
+  expect(f.uploads).toEqual([{ id: "zaliczgmine-unvisited-source", features: 0 }]);
+
+  f.sources.clear();
+  f.rendering.addCommunesLayers();
+  expect(f.uploads).toEqual([
+    { id: "zaliczgmine-unvisited-source", features: 0 },
+    { id: "zaliczgmine-unvisited-source", features: 0 },
+  ]);
+});
+
 test("stored GPX tracks are uploaded once as a batch", async () => {
   const f = await fixture();
   await f.gpx.loadStoredGpx();
