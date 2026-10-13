@@ -31,11 +31,12 @@ interface RouteApp {
       fetchRoutePolygons: (lines: Lines) => Promise<never[]>;
       convertToGeoJSON: () => Collection;
     };
+    mapLayers: { showNotification: (message: string, retry: () => Promise<void>) => void };
     plannedRoute?: { start: () => void; stop: () => void };
   };
 }
 
-async function fixture(initialSource: PlannerSource) {
+async function fixture(initialSource: PlannerSource, failFetch = false) {
   const bundle = await Bun.build({
     entrypoints: ["modules/planned-route.js"],
     target: "browser",
@@ -45,6 +46,7 @@ async function fixture(initialSource: PlannerSource) {
   if (!bundle.success || !bundle.outputs[0]) throw new Error("Could not bundle route observer");
 
   const observed: Lines[] = [];
+  const notifications: { message: string; retry: () => Promise<void> }[] = [];
   const uploads: Collection[] = [];
   const listeners = new Map<string, (event: { sourceId?: string }) => void>();
   const timers = new Map<number, () => void>();
@@ -80,9 +82,14 @@ async function fixture(initialSource: PlannerSource) {
     },
     state: { map, communesVisible: true, visitedCommunesIds: new Set() },
     modules: {
+      mapLayers: {
+        showNotification: (message, retry) => notifications.push({ message, retry }),
+      },
       communesData: {
         fetchRoutePolygons: async (lines) => {
           observed.push(lines);
+
+          if (failFetch) throw new Error("Unavailable");
 
           return [];
         },
@@ -93,6 +100,8 @@ async function fixture(initialSource: PlannerSource) {
 
   runInNewContext(await bundle.outputs[0].text(), {
     window: { ZaliczGmine: app },
+    document: { getElementById: () => null },
+    ZaliczGmineI18n: { t: (key: string) => key },
     ZaliczGmineLogger: { create: () => ({ debug() {}, warn() {} }) },
     ZaliczGmineSites: { getCurrentSite: () => ({ routeSourceId: "planner" }) },
     TextEncoder,
@@ -117,6 +126,10 @@ async function fixture(initialSource: PlannerSource) {
   return {
     observer,
     observed,
+    notifications,
+    recover: () => {
+      failFetch = false;
+    },
     uploads,
     layers,
     timers,
@@ -306,6 +319,28 @@ test("planner source events still detect in-place coordinate edits", async () =>
         ],
       ],
     ]);
+  } finally {
+    f.observer.stop();
+  }
+});
+
+test("failed route analysis waits for manual retry or a changed route", async () => {
+  const f = await fixture({ _data: route() }, true);
+
+  try {
+    expect(f.notifications[0]?.message).toBe("route.highlightingUnavailable");
+    expect(f.observed).toHaveLength(1);
+    expect(f.layers.size).toBe(2);
+    f.emit("sourcedata", "planner");
+    await f.flush();
+    expect(f.observed).toHaveLength(1);
+    f.recover();
+    await f.notifications[0]?.retry();
+    expect(f.observed).toHaveLength(2);
+    f.setSource({ _data: route(5) });
+    f.emit("sourcedata", "planner");
+    await f.flush();
+    expect(f.observed).toHaveLength(3);
   } finally {
     f.observer.stop();
   }

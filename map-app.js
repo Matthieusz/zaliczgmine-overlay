@@ -1,3 +1,5 @@
+import { Effect, Result } from "effect";
+import { loadInitialMap, startupStep } from "./src/map-startup.ts";
 import { failureReply, MapNotReady } from "./src/user-errors.ts";
 
 (function (app) {
@@ -22,7 +24,6 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
   const {
     addCommunesLayers,
     addToggleButton,
-    refreshCommunesForCurrentZoom,
     refreshCommunesStyles,
     setupStyleChangeObserver,
     setupZoomObserver,
@@ -126,14 +127,6 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
   async function init() {
     await languageReady;
     log.debug("Starting initialization");
-    let communesLoadError = null;
-
-    try {
-      await loadVisitedCommunes();
-    } catch (error) {
-      communesLoadError = error;
-      log.error("Could not fetch visited communes:", error);
-    }
 
     for (let attempt = 0; attempt < 120; attempt++) {
       const map = await findMap();
@@ -149,13 +142,62 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
       log.debug("Map style ready");
       app.modules.plannedRoute.start();
 
-      const initialRequest = getPolygonRequestForMap(map);
-      const polygons = await fetchPolygons(initialRequest);
+      let visitedResult = null;
 
-      if (!polygons) return;
+      async function loadStartupData() {
+        try {
+          const outcome = await Effect.runPromise(
+            loadInitialMap(
+              visitedResult && Result.isSuccess(visitedResult)
+                ? Effect.succeed(visitedResult.success)
+                : startupStep(loadVisitedCommunes),
+              startupStep(async () => {
+                await waitForStyleLoad();
+                const request = getPolygonRequestForMap(map);
+                const polygons = await fetchPolygons(request, true);
 
-      activatePolygons(initialRequest, polygons);
-      addCommunesLayers();
+                return { request, polygons };
+              }),
+            ),
+          );
+
+          visitedResult = outcome.visited;
+          log.debug("Initial map data", { status: outcome.status });
+          refreshCommunesStyles();
+
+          if (Result.isFailure(outcome.boundaries)) {
+            const boundaryMessage = t("communes.initialBoundariesError", {
+              error: t(failureReply(outcome.boundaries.failure).error),
+            });
+
+            const visitedMessage = Result.isFailure(outcome.visited)
+              ? t("communes.visitedLoadError", {
+                  error: t(failureReply(outcome.visited.failure).error),
+                })
+              : t("communes.loadedSummary", { count: app.state.visitedCommunesIds.size });
+
+            showNotification(`${boundaryMessage} ${visitedMessage}`, loadStartupData);
+
+            return;
+          }
+
+          const { request, polygons } = outcome.boundaries.success;
+          activatePolygons(request, polygons);
+          addCommunesLayers();
+          showNotification(
+            Result.isFailure(outcome.visited)
+              ? t("communes.visitedLoadError", {
+                  error: t(failureReply(outcome.visited.failure).error),
+                })
+              : t("communes.loadedSummary", { count: app.state.visitedCommunesIds.size }),
+            Result.isFailure(outcome.visited) ? loadStartupData : undefined,
+          );
+        } catch (error) {
+          log.error("Initial map setup failed", error);
+          showNotification(t("extension.unexpectedError"), loadStartupData);
+        }
+      }
+
       addToggleButton();
       setupStyleChangeObserver();
       setupZoomObserver();
@@ -164,17 +206,10 @@ import { failureReply, MapNotReady } from "./src/user-errors.ts";
         await loadStoredGpx();
       } catch (error) {
         log.error("Could not load saved GPX:", error);
+        showNotification(t("gpx.someTracksUnavailable"), undefined, "gpx");
       }
 
-      refreshCommunesForCurrentZoom();
-
-      if (communesLoadError) {
-        showNotification(
-          t("communes.visitedLoadError", { error: t(failureReply(communesLoadError).error) }),
-        );
-      } else {
-        showNotification(t("communes.loadedSummary", { count: app.state.visitedCommunesIds.size }));
-      }
+      await loadStartupData();
 
       log.debug("Extension ready");
 

@@ -177,7 +177,7 @@ import { AccountError } from "../src/user-errors.ts";
     }
   }
 
-  async function fetchPolygons(request) {
+  async function fetchPolygons(request, propagateFailure = false) {
     if (polygonsByRequest.has(request.cacheKey)) {
       log.debug("Using cached communes", { apiZoom: request.apiZoom });
       const cachedPolygons = polygonsByRequest.get(request.cacheKey);
@@ -190,7 +190,11 @@ import { AccountError } from "../src/user-errors.ts";
       log.debug("Sharing in-flight commune request", { apiZoom: request.apiZoom });
 
       // Share the same error handling as the original caller.
-      return pendingPolygonRequests.get(request.cacheKey).catch(() => null);
+      return pendingPolygonRequests.get(request.cacheKey).catch((error) => {
+        if (propagateFailure) throw error;
+
+        return null;
+      });
     }
 
     try {
@@ -208,6 +212,8 @@ import { AccountError } from "../src/user-errors.ts";
       return await pendingRequest;
     } catch (error) {
       log.error(`Could not fetch communes at zoom=${request.apiZoom}:`, error);
+
+      if (propagateFailure) throw error;
 
       return null;
     } finally {

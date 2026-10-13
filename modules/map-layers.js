@@ -1,3 +1,5 @@
+import { Match } from "effect";
+
 (function (app) {
   "use strict";
 
@@ -372,17 +374,44 @@
     app.state.map.on("moveend", scheduleRefresh);
   }
 
-  function showNotification(message) {
-    const existing = document.getElementById("zaliczgmine-notification");
+  function showNotification(message, retry, channel) {
+    const id = channel ? `zaliczgmine-${channel}-notification` : "zaliczgmine-notification";
+    const existing = document.getElementById(id);
 
     if (existing) existing.remove();
 
     const notification = document.createElement("div");
-    notification.id = "zaliczgmine-notification";
+    notification.id = id;
     notification.textContent = message;
+    notification.setAttribute("role", "status");
+
+    if (retry) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = t("extension.retry");
+      button.style.marginLeft = "12px";
+      button.addEventListener("click", async () => {
+        if (button.disabled) return;
+        button.disabled = true;
+
+        try {
+          await retry();
+        } finally {
+          button.disabled = false;
+        }
+      });
+      notification.appendChild(button);
+    }
+
+    const top = Match.value(channel).pipe(
+      Match.when("route", () => 100),
+      Match.when("gpx", () => 180),
+      Match.orElse(() => 20),
+    );
+
     notification.style.cssText = `
       position: fixed;
-      top: 20px;
+      top: ${top}px;
       right: 20px;
       background: linear-gradient(135deg, #51cf66 0%, #2f9e44 100%);
       color: white;
@@ -394,9 +423,12 @@
       box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
     `;
     document.body.appendChild(notification);
-    setTimeout(() => {
-      if (notification.parentElement) notification.remove();
-    }, 4000);
+
+    if (!retry) {
+      setTimeout(() => {
+        if (notification.parentElement) notification.remove();
+      }, 4000);
+    }
   }
 
   app.modules.mapLayers = {

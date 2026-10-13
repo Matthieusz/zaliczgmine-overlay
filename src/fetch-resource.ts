@@ -1,4 +1,4 @@
-import { Effect, Schema } from "effect";
+import { Effect, Predicate, Schedule, Schema } from "effect";
 import { InvalidApiData, NetworkError, apiFailure, failureReply } from "./user-errors.ts";
 
 /** Existing runtime request; endpoint adapters decode successful JSON. */
@@ -68,6 +68,13 @@ export const fetchResource = Effect.fn("Background.fetchResource")(function* (
 export const handleFetch = Effect.fn("Background.handleFetch")(
   (request: FetchRequest, transport: FetchTransport) =>
     fetchResource(request, transport).pipe(
+      Effect.retry({
+        schedule: Schedule.exponential("250 millis").pipe(Schedule.upTo({ times: 2 })),
+        while: (error) =>
+          Predicate.isTagged(error, "ApiError") &&
+          error.reason === "other" &&
+          (error.http === 502 || error.http === 503 || error.http === 504),
+      }),
       Effect.timeout("30 seconds"),
       Effect.catchTag("TimeoutError", () => Effect.fail(new NetworkError({ reason: "timeout" }))),
       Effect.match({

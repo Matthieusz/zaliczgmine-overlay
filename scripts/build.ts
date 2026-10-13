@@ -30,6 +30,7 @@ for (const path of assets) {
 
 const bundledScripts = [
   "modules/map-finder.js",
+  "modules/map-layers.js",
   "modules/planned-route.js",
   "modules/zaliczgmine-api.js",
   "modules/extension-bridge.js",

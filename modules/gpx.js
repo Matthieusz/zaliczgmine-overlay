@@ -1,3 +1,4 @@
+import { Predicate } from "effect";
 import { InvalidGpx } from "../src/user-errors.ts";
 
 (function (app) {
@@ -200,17 +201,32 @@ import { InvalidGpx } from "../src/user-errors.ts";
     tracks = [];
     revision++;
 
+    let skipped = 0;
+
     for (const track of storedTracks) {
-      if (!track || !track.text) continue;
+      if (!track || !Predicate.isString(track.text) || !track.text.trim()) {
+        skipped++;
+
+        continue;
+      }
 
       try {
         storeGpx(track.text, track.name, track.id);
       } catch (error) {
+        skipped++;
         log.error(`Skipped GPX "${track.name || "track.gpx"}":`, error);
       }
     }
 
     renderGpx();
+
+    if (skipped > 0) {
+      app.modules.mapLayers.showNotification(
+        globalThis.ZaliczGmineI18n.t("gpx.someTracksUnavailable"),
+        undefined,
+        "gpx",
+      );
+    }
 
     return getTracksSummary();
   }

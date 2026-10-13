@@ -17,6 +17,59 @@ describe("background fetch boundary", () => {
     expect(reply).toEqual({ success: true, data: { status: "success", items: [] } });
   });
 
+  test("retries transient HTTP failures at most twice", async () => {
+    let attempts = 0;
+
+    const reply = await Effect.runPromise(
+      handleFetch(request, async () => {
+        attempts++;
+
+        return new Response("unavailable", { status: 503 });
+      }),
+    );
+
+    expect(attempts).toBe(3);
+    expect(reply).toEqual(failureReply(apiFailure(undefined, 503)));
+  });
+
+  test("a transient failure can recover", async () => {
+    let attempts = 0;
+
+    const reply = await Effect.runPromise(
+      handleFetch(request, async () => {
+        attempts++;
+
+        return attempts === 1
+          ? new Response("unavailable", { status: 502 })
+          : Response.json({ ok: true });
+      }),
+    );
+
+    expect(attempts).toBe(2);
+    expect(reply).toEqual({ success: true, data: { ok: true } });
+  });
+
+  test("invalid requests and malformed responses are never retried", async () => {
+    for (const response of [
+      () => Response.json({ code: "INVALID_REQUEST" }, { status: 503 }),
+      () => new Response("bad request", { status: 400 }),
+      () => new Response("invalid JSON"),
+    ]) {
+      let attempts = 0;
+
+      const reply = await Effect.runPromise(
+        handleFetch(request, async () => {
+          attempts++;
+
+          return response();
+        }),
+      );
+
+      expect(attempts).toBe(1);
+      expect(reply.success).toBe(false);
+    }
+  });
+
   test("keeps text responses intact", async () => {
     expect(
       await Effect.runPromise(

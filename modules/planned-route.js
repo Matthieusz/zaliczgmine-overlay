@@ -16,6 +16,7 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
   let revision = 0;
   let readRevision = 0;
   let lastLines = null;
+  let failedLines = null;
   let lastRouteSource = null;
   let matches = [];
   let renderedItems = null;
@@ -158,6 +159,8 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
 
       if (read !== readRevision || !watchedMap || !app.state.communesVisible) return;
 
+      if (sameLines(failedLines, lines)) return;
+
       if (sameLines(lastLines, lines)) {
         render();
 
@@ -182,6 +185,8 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
           : [];
 
       if (!result || current !== revision) return;
+      failedLines = null;
+      document.getElementById("zaliczgmine-route-notification")?.remove();
       log.debug("Route analysis completed", { revision: current, communesCount: result.length });
 
       if (result.length !== matches.length || result.some((item, i) => item !== matches[i]))
@@ -190,10 +195,20 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
     } catch (error) {
       // A rejected fetch for an old route must not invalidate a newer result.
       if (current !== undefined ? current !== revision : read !== readRevision) return;
+      failedLines = lastLines;
       lastLines = null;
       matches = [];
       render();
       log.warn("Could not analyze route", error);
+      app.modules.mapLayers.showNotification(
+        globalThis.ZaliczGmineI18n.t("route.highlightingUnavailable"),
+        () => {
+          failedLines = null;
+
+          return refresh();
+        },
+        "route",
+      );
     }
   }
 
@@ -243,6 +258,8 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
     readRevision++;
     lastLines = lastRouteSource = renderedItems = renderedSource = null;
     matches = [];
+    failedLines = null;
+    document.getElementById("zaliczgmine-route-notification")?.remove();
     app.state.routeCommunesIds = new Set();
   }
 
