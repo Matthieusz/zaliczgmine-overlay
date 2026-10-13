@@ -1,4 +1,11 @@
-import { Option, Predicate, Schema } from "effect";
+import { Effect, Exit, Fiber, Option, Predicate, Schema, Scope } from "effect";
+
+class RouteAnalysisError extends Schema.TaggedError()("RouteAnalysisError", {
+  cause: Schema.Unknown,
+}) {}
+
+const nativeOperation = (operation) =>
+  Effect.tryPromise({ try: operation, catch: (cause) => new RouteAnalysisError({ cause }) });
 
 const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunction) });
 
@@ -12,7 +19,10 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
   const empty = () => ({ type: "FeatureCollection", features: [] });
   let watchedMap = null;
   let sourceId = null;
-  let timer = null;
+  let observerScope = null;
+  let refreshFiber = null;
+  let analysisFiber = null;
+  let scheduled = false;
   let revision = 0;
   let readRevision = 0;
   let lastLines = null;
@@ -74,8 +84,7 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
     );
   }
 
-  async function readLines() {
-    const source = watchedMap?.getSource(sourceId) || null;
+  async function readLines(source) {
     lastRouteSource = source;
 
     if (!source) return [];
@@ -149,76 +158,128 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
     }
   }
 
-  async function refresh() {
-    if (!watchedMap || !app.state.communesVisible) return;
-    const read = ++readRevision;
-    let current;
+  function reportFailure(error, isCurrent) {
+    // Native promises may settle after their owning fiber was interrupted.
+    if (!isCurrent()) return;
+    failedLines = lastLines;
+    lastLines = null;
+    matches = [];
+    render();
+    log.warn("Could not analyze route", error.cause);
+    const scope = observerScope;
+    app.modules.mapLayers.showNotification(
+      globalThis.ZaliczGmineI18n.t("route.highlightingUnavailable"),
+      () => {
+        if (scope !== observerScope) return Promise.resolve();
+        failedLines = null;
 
-    try {
-      const lines = await readLines();
+        return refresh();
+      },
+      "route",
+    );
+  }
 
-      if (read !== readRevision || !watchedMap || !app.state.communesVisible) return;
+  const analyze = Effect.fn("PlannedRoute.analyze")(function* (lines, current, isCurrent) {
+    log.debug("Analyzing updated route", { revision: current, linesCount: lines.length });
 
-      if (sameLines(failedLines, lines)) return;
+    const polygons = lines.length
+      ? yield* nativeOperation(() => app.modules.communesData.fetchRoutePolygons(lines))
+      : [];
 
-      if (sameLines(lastLines, lines)) {
-        render();
+    if (!isCurrent()) return;
 
-        return;
-      }
+    const result =
+      lines.length && polygons.length
+        ? yield* nativeOperation(() =>
+            globalThis.ZaliczGmineRouteGeometry.calculate(lines, polygons, () => !isCurrent()),
+          )
+        : [];
 
-      lastLines = lines;
-      current = ++revision;
-      log.debug("Analyzing updated route", { revision: current, linesCount: lines.length });
+    if (!result || !isCurrent()) return;
+    failedLines = null;
+    document.getElementById("zaliczgmine-route-notification")?.remove();
+    log.debug("Route analysis completed", { revision: current, communesCount: result.length });
 
-      const polygons = lines.length ? await app.modules.communesData.fetchRoutePolygons(lines) : [];
+    if (result.length !== matches.length || result.some((item, i) => item !== matches[i]))
+      matches = result;
+    render();
+  });
 
-      if (current !== revision) return;
+  const readRoute = Effect.fn("PlannedRoute.read")(function* (map, source, read, scope) {
+    const isCurrent = () =>
+      scope === observerScope &&
+      map === watchedMap &&
+      (map.getSource(sourceId) || null) === source &&
+      app.state.communesVisible;
 
-      const result =
-        lines.length && polygons.length
-          ? await globalThis.ZaliczGmineRouteGeometry.calculate(
-              lines,
-              polygons,
-              () => current !== revision,
-            )
-          : [];
+    const lines = yield* nativeOperation(() => readLines(source)).pipe(
+      Effect.catchTag("RouteAnalysisError", (error) =>
+        Effect.sync(() => reportFailure(error, () => read === readRevision && isCurrent())),
+      ),
+    );
 
-      if (!result || current !== revision) return;
-      failedLines = null;
-      document.getElementById("zaliczgmine-route-notification")?.remove();
-      log.debug("Route analysis completed", { revision: current, communesCount: result.length });
+    if (!lines || read !== readRevision || !isCurrent()) return;
 
-      if (result.length !== matches.length || result.some((item, i) => item !== matches[i]))
-        matches = result;
+    if (sameLines(failedLines, lines)) return;
+
+    if (sameLines(lastLines, lines)) {
       render();
-    } catch (error) {
-      // A rejected fetch for an old route must not invalidate a newer result.
-      if (current !== undefined ? current !== revision : read !== readRevision) return;
-      failedLines = lastLines;
-      lastLines = null;
-      matches = [];
-      render();
-      log.warn("Could not analyze route", error);
-      app.modules.mapLayers.showNotification(
-        globalThis.ZaliczGmineI18n.t("route.highlightingUnavailable"),
-        () => {
-          failedLines = null;
 
-          return refresh();
-        },
-        "route",
-      );
+      return;
     }
+
+    lastLines = lines;
+    const current = ++revision;
+
+    if (analysisFiber) yield* Fiber.interrupt(analysisFiber);
+    const analysisCurrent = () => current === revision && isCurrent();
+    analysisFiber = yield* analyze(lines, current, analysisCurrent).pipe(
+      Effect.catchTag("RouteAnalysisError", (error) =>
+        Effect.sync(() => reportFailure(error, analysisCurrent)),
+      ),
+      Effect.forkIn(scope),
+    );
+    yield* Fiber.await(analysisFiber);
+  });
+
+  function refresh() {
+    if (!observerScope || !watchedMap || !app.state.communesVisible) return Promise.resolve();
+    const map = watchedMap;
+    const source = map.getSource(sourceId) || null;
+
+    // Identical coordinates from a new source cannot reuse an obsolete analysis.
+    if (source !== lastRouteSource) lastLines = null;
+    const read = ++readRevision;
+    const scope = observerScope;
+    refreshFiber = Effect.runSync(
+      Effect.gen(function* () {
+        if (refreshFiber) yield* Fiber.interrupt(refreshFiber);
+
+        return yield* readRoute(map, source, read, scope).pipe(Effect.forkIn(scope));
+      }),
+    );
+
+    return Effect.runPromise(Fiber.await(refreshFiber)).then(() => undefined);
   }
 
   function scheduleRefresh() {
-    if (!watchedMap || timer !== null) return;
-    // Coalesce bursts without postponing work indefinitely while dragging.
-    timer = setTimeout(() => {
-      timer = null;
-      void refresh();
-    }, 60);
+    if (!observerScope || scheduled) return;
+    scheduled = true;
+    // A scoped, fixed window coalesces bursts without trailing-edge starvation.
+    Effect.runSync(
+      Effect.callback((resume) => {
+        const timer = setTimeout(() => resume(Effect.void), 60);
+
+        return Effect.sync(() => clearTimeout(timer));
+      }).pipe(
+        Effect.flatMap(() => {
+          scheduled = false;
+
+          return Effect.promise(() => refresh());
+        }),
+        Effect.forkIn(observerScope),
+      ),
+    );
   }
 
   function onSourceData(event) {
@@ -251,11 +312,15 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
       watchedMap.off("remove", stop);
     }
 
-    clearTimeout(timer);
-    timer = null;
+    const scope = observerScope;
+    observerScope = null;
     watchedMap = null;
     revision++;
     readRevision++;
+
+    if (scope) Effect.runSync(Scope.close(scope, Exit.void));
+    refreshFiber = analysisFiber = null;
+    scheduled = false;
     lastLines = lastRouteSource = renderedItems = renderedSource = null;
     matches = [];
     failedLines = null;
@@ -271,6 +336,7 @@ const SourceReader = Schema.Struct({ getData: Schema.declare(Predicate.isFunctio
     if (!sourceId) return;
     log.debug("Starting route observer", { sourceId });
     watchedMap = app.state.map;
+    observerScope = Scope.makeUnsafe();
     watchedMap.on("sourcedata", onSourceData);
     watchedMap.on("styledata", onStyleData);
     // The new style may become ready only after its final styledata event.

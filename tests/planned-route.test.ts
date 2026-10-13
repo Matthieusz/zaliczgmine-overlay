@@ -36,7 +36,11 @@ interface RouteApp {
   };
 }
 
-async function fixture(initialSource: PlannerSource, failFetch = false) {
+async function fixture(
+  initialSource: PlannerSource,
+  failFetch = false,
+  fetchPolygons?: (lines: Lines) => Promise<never[]>,
+) {
   const bundle = await Bun.build({
     entrypoints: ["modules/planned-route.js"],
     target: "browser",
@@ -91,7 +95,7 @@ async function fixture(initialSource: PlannerSource, failFetch = false) {
 
           if (failFetch) throw new Error("Unavailable");
 
-          return [];
+          return fetchPolygons ? fetchPolygons(lines) : [];
         },
         convertToGeoJSON: () => ({ type: "FeatureCollection", features: [] }),
       },
@@ -363,4 +367,67 @@ test("stopping the observer removes event listeners and pending refreshes", asyn
   expect(f.timers.size).toBe(0);
   await f.flush();
   expect(f.observed).toHaveLength(1);
+});
+
+test("superseded native reads cannot start obsolete analysis", async () => {
+  const pending = Promise.withResolvers<RouteData>();
+  const f = await fixture({ getData: () => pending.promise });
+
+  try {
+    f.setSource({ _data: route(5) });
+    f.emit("sourcedata", "planner");
+    await f.flush();
+    pending.resolve(route());
+    await setImmediate();
+    expect(f.observed).toEqual([[route(5).coordinates]]);
+    expect(f.notifications).toHaveLength(0);
+  } finally {
+    f.observer.stop();
+  }
+});
+
+test("unchanged route events preserve pending analysis; changed routes discard old failures", async () => {
+  const pending = Promise.withResolvers<never[]>();
+
+  const f = await fixture({ _data: route() }, false, (lines) =>
+    lines[0]?.[0]?.[0] === 1 ? pending.promise : Promise.resolve([]),
+  );
+
+  try {
+    f.emit("sourcedata", "planner");
+    await f.flush();
+    expect(f.observed).toHaveLength(1);
+    f.setSource({ _data: route(5) });
+    f.emit("sourcedata", "planner");
+    await f.flush();
+    expect(f.observed).toHaveLength(2);
+    const uploads = f.uploads.length;
+    pending.reject(new Error("Obsolete failure"));
+    await setImmediate();
+    expect(f.notifications).toHaveLength(0);
+    expect(f.uploads).toHaveLength(uploads);
+  } finally {
+    f.observer.stop();
+  }
+});
+
+test("stop interrupts pending native work and restart owns a fresh scope", async () => {
+  const pending = Promise.withResolvers<never[]>();
+  let first = true;
+
+  const f = await fixture({ _data: route() }, false, () => {
+    if (!first) return Promise.resolve([]);
+    first = false;
+
+    return pending.promise;
+  });
+
+  f.observer.stop();
+  f.observer.start();
+  await setImmediate();
+  pending.reject(new Error("Stopped work"));
+  await setImmediate();
+  expect(f.observed).toHaveLength(2);
+  expect(f.notifications).toHaveLength(0);
+  f.observer.stop();
 });
