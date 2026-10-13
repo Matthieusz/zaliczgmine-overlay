@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { runInNewContext } from "node:vm";
 import type { FetchReply, FetchTransport } from "../src/fetch-resource.ts";
+import { apiFailure, failureReply } from "../src/user-errors.ts";
 
 // MV3 listeners return whether Chrome should keep the response channel open.
 type RuntimeListener = (
@@ -78,7 +79,7 @@ test("background rejects malformed fetch messages before network I/O", async () 
       replies.push(reply),
     ),
   ).toBe(false);
-  expect(replies).toEqual([{ success: false, error: "Invalid fetch request" }]);
+  expect(replies).toEqual([failureReply(apiFailure("INVALID_REQUEST"))]);
   expect(called).toBe(false);
 });
 

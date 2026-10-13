@@ -1,7 +1,8 @@
+import { NetworkError, StorageError, remoteFailure } from "../src/user-errors.ts";
+
 (function (app, protocol) {
   "use strict";
 
-  const { t } = globalThis.ZaliczGmineI18n;
   const log = globalThis.ZaliczGmineLogger.create("extension-bridge");
 
   const { MESSAGE } = protocol;
@@ -31,7 +32,11 @@
         });
 
         if (event.data.error) {
-          reject(new Error(event.data.error));
+          reject(
+            type === MESSAGE.STORAGE_GET
+              ? new StorageError({ operation: "read" })
+              : new NetworkError({ reason: "unavailable" }),
+          );
         } else {
           resolve(event.data);
         }
@@ -43,7 +48,11 @@
       timeoutId = window.setTimeout(() => {
         window.removeEventListener("message", handler);
         log.warn("Request timed out", { type, requestId, timeoutMs });
-        reject(new Error(t("extension.noResponse")));
+        reject(
+          type === MESSAGE.STORAGE_GET
+            ? new StorageError({ operation: "read" })
+            : new NetworkError({ reason: "timeout" }),
+        );
       }, timeoutMs);
     });
   }
@@ -60,10 +69,7 @@
     );
 
     if (!message.response || !message.response.success) {
-      throw Object.assign(new Error(message.response?.error || t("api.fetchError")), {
-        code: message.response?.code,
-        http: message.response?.http,
-      });
+      throw remoteFailure(message.response);
     }
 
     return message.response.data;

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { Effect } from "effect";
+import { Cause, Effect, Exit } from "effect";
+import { apiFailure, failureReply, NetworkError, InvalidApiData } from "../src/user-errors.ts";
 import { FetchRequest, fetchResource, handleFetch } from "../src/fetch-resource.ts";
 
 const request = FetchRequest.make({
@@ -24,14 +25,17 @@ describe("background fetch boundary", () => {
     ).toEqual({ success: true, data: "<gpx/>" });
   });
 
-  test("preserves provider code and HTTP status without serializing causes", async () => {
+  test("maps provider codes and HTTP status without serializing provider text", async () => {
     expect(
       await Effect.runPromise(
         handleFetch(request, async () =>
-          Response.json({ message: "User not found", code: "USER_NOT_FOUND" }, { status: 404 }),
+          Response.json(
+            { message: "private provider details", code: "USER_NOT_FOUND" },
+            { status: 404 },
+          ),
         ),
       ),
-    ).toEqual({ success: false, error: "User not found", code: "USER_NOT_FOUND", http: 404 });
+    ).toEqual(failureReply(apiFailure("USER_NOT_FOUND", 404)));
   });
 
   test("reports a non-JSON HTTP error as HTTP failure", async () => {
@@ -39,17 +43,40 @@ describe("background fetch boundary", () => {
       await Effect.runPromise(
         handleFetch(request, async () => new Response("upstream down", { status: 503 })),
       ),
-    ).toEqual({ success: false, error: "HTTP 503", http: 503 });
+    ).toEqual(failureReply(apiFailure(undefined, 503)));
   });
 
   test("does not leak network error contents", async () => {
     const reply = await Effect.runPromise(
       handleFetch(request, async () => {
-        throw new Error("private upstream details");
+        throw new TypeError("private upstream details");
       }),
     );
 
-    expect(reply).toEqual({ success: false, error: "Could not fetch data" });
+    expect(reply).toEqual(failureReply(new NetworkError({ reason: "unavailable" })));
+  });
+
+  test("invalid JSON is an expected data failure", async () => {
+    expect(
+      await Effect.runPromise(
+        handleFetch(request, async () => new Response("private invalid JSON")),
+      ),
+    ).toEqual(failureReply(new InvalidApiData({})));
+  });
+
+  test("unexpected transport exceptions remain defects", async () => {
+    const exit = await Effect.runPromiseExit(
+      handleFetch(request, async () => {
+        throw new Error("private defect");
+      }),
+    );
+
+    expect(Exit.isFailure(exit)).toBe(true);
+
+    if (Exit.isFailure(exit)) {
+      expect(Cause.hasDies(exit.cause)).toBe(true);
+      expect(Cause.hasFails(exit.cause)).toBe(false);
+    }
   });
 
   test("closes the request's abort scope after reading the body", async () => {

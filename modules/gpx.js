@@ -1,7 +1,8 @@
+import { InvalidGpx } from "../src/user-errors.ts";
+
 (function (app) {
   "use strict";
 
-  const { t } = globalThis.ZaliczGmineI18n;
   const log = globalThis.ZaliczGmineLogger.create("gpx");
 
   const { layerIds, sourceIds, styles } = app.config;
@@ -15,7 +16,7 @@
     const doc = new DOMParser().parseFromString(gpxText, "application/xml");
 
     if (doc.querySelector("parsererror")) {
-      throw new Error(t("gpx.invalidFile"));
+      throw new InvalidGpx({ reason: "malformed" });
     }
 
     // mapbox/togeojson (BSD-2-Clause); see lib header and THIRD_PARTY_LICENSES.txt.
@@ -28,7 +29,7 @@
     );
 
     if (features.length === 0) {
-      throw new Error(t("gpx.noTrack"));
+      throw new InvalidGpx({ reason: "noTrack" });
     }
 
     return { type: "FeatureCollection", features };
@@ -128,7 +129,7 @@
 
   function storeGpx(gpxText, name, id) {
     if (!gpxText || !gpxText.trim()) {
-      throw new Error("Plik GPX jest pusty");
+      throw new InvalidGpx({ reason: "empty" });
     }
 
     const geojson = parseGpx(gpxText);

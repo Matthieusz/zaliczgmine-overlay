@@ -1,3 +1,5 @@
+import { AccountError } from "../src/user-errors.ts";
+
 (function (app) {
   "use strict";
 
@@ -44,7 +46,7 @@
 
     // only numeric user ID
     if (!/^\d+$/.test(normalizedId)) {
-      throw new Error(t("account.invalidId"));
+      throw new AccountError({ reason: normalizedId ? "invalid" : "missing" });
     }
 
     return loadVisitedCommunesFromApi(normalizedId);

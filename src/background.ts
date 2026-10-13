@@ -1,5 +1,6 @@
 import { Effect, Option, Schema } from "effect";
 import { FetchRequest, handleFetch } from "./fetch-resource.ts";
+import { apiFailure, failureReply } from "./user-errors.ts";
 
 const FetchMessage = Schema.Struct({ type: FetchRequest.fields.type });
 
@@ -10,7 +11,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const request = Schema.decodeUnknownOption(FetchRequest)(message);
 
   if (Option.isNone(request)) {
-    sendResponse({ success: false, error: "Invalid fetch request" });
+    sendResponse(failureReply(apiFailure("INVALID_REQUEST")));
 
     return false;
   }
@@ -18,6 +19,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   Effect.runFork(
     handleFetch(request.value, (url, signal) => fetch(url, { signal })).pipe(
       Effect.tap((reply) => Effect.sync(() => sendResponse(reply))),
+      Effect.tapDefect(() => Effect.sync(() => sendResponse(failureReply(undefined)))),
     ),
   );
 

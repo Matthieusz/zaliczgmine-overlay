@@ -1,44 +1,33 @@
-import { Effect, Match, Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { InvalidApiData, NetworkError, apiFailure, failureReply } from "./user-errors.ts";
 
-/** Existing runtime wire request. JSON stays unknown until an API-specific decoder handles it. */
+/** Existing runtime request; endpoint adapters decode successful JSON. */
 export const FetchRequest = Schema.Struct({
   type: Schema.Literal("ZALICZGMINE_FETCH"),
   url: Schema.String,
   responseType: Schema.optionalKey(Schema.Literals(["json", "text"])),
 });
 
-/** Parsed runtime request; omitted responseType means JSON, matching the original protocol. */
+/** Parsed runtime request. */
 export interface FetchRequest extends Schema.Schema.Type<typeof FetchRequest> {}
 
-/** Expected transport failure. Only message/code/http are projected onto the runtime wire. */
-export class FetchError extends Schema.TaggedError<FetchError>()("FetchError", {
-  message: Schema.String,
-  code: Schema.optionalKey(Schema.String),
-  http: Schema.optionalKey(Schema.Int),
-  cause: Schema.optionalKey(Schema.Defect()),
-}) {}
+const ProviderError = Schema.Struct({ code: Schema.optionalKey(Schema.String) });
 
-const ProviderError = Schema.Struct({
-  message: Schema.optionalKey(Schema.String),
-  code: Schema.optionalKey(Schema.String),
-});
+function networkFailure(cause: unknown) {
+  if (cause instanceof TypeError) return new NetworkError({ reason: "unavailable" });
 
-interface FetchFailureReply {
-  success: false;
-  error: string;
-  code?: string;
-  http?: number;
+  throw cause;
 }
 
-/** Wire response consumed by the content-script and popup. Never serialize causes. */
+/** Wire response contains safe keys and explicit expected-failure DTOs, never causes. */
 export type FetchReply =
   | { readonly success: true; readonly data: unknown }
-  | Readonly<FetchFailureReply>;
+  | ReturnType<typeof failureReply>;
 
-/** Browser transport seam. Effect supplies the signal and aborts on interruption or timeout. */
+/** Browser transport seam; rejects with browser fetch errors, not application exceptions. */
 export type FetchTransport = (url: string, signal: AbortSignal) => Promise<Response>;
 
-/** Executes a browser HTTP request without retries; propagates typed HTTP/network/body failures. */
+/** Fetches without retries. Unexpected transport exceptions remain defects. */
 export const fetchResource = Effect.fn("Background.fetchResource")(function* (
   request: FetchRequest,
   transport: FetchTransport,
@@ -47,68 +36,43 @@ export const fetchResource = Effect.fn("Background.fetchResource")(function* (
 
   const response = yield* Effect.tryPromise({
     try: () => transport(request.url, signal),
-    catch: (cause) => new FetchError({ message: "Could not fetch data", cause }),
-  });
-
-  if (request.responseType === "text") {
-    if (!response.ok)
-      return yield* new FetchError({ message: `HTTP ${response.status}`, http: response.status });
-
-    return yield* Effect.tryPromise({
-      try: () => response.text(),
-      catch: (cause) => new FetchError({ message: "Could not read response", cause }),
-    });
-  }
-
-  const data: unknown = yield* Effect.tryPromise({
-    try: () => response.json(),
-    catch: (cause) =>
-      new FetchError({
-        message: response.ok ? "Invalid API response" : `HTTP ${response.status}`,
-        http: response.status,
-        cause,
-      }),
+    catch: networkFailure,
   });
 
   if (!response.ok) {
-    const provider = yield* Schema.decodeUnknownEffect(ProviderError)(data).pipe(
-      Effect.orElseSucceed((): Schema.Schema.Type<typeof ProviderError> => ({})),
-    );
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: networkFailure,
+    }).pipe(Effect.mapError(() => apiFailure(undefined, response.status)));
 
-    return yield* new FetchError({
-      ...provider,
-      message: provider.message || `HTTP ${response.status}`,
-      http: response.status,
-    });
+    const provider = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ProviderError))(
+      text,
+    ).pipe(Effect.orElseSucceed((): Schema.Schema.Type<typeof ProviderError> => ({})));
+
+    return yield* apiFailure(provider.code, response.status);
   }
 
-  return data;
+  const text = yield* Effect.tryPromise({
+    try: () => response.text(),
+    catch: networkFailure,
+  });
+
+  if (request.responseType === "text") return text;
+
+  return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(text).pipe(
+    Effect.mapError(() => new InvalidApiData({})),
+  );
 }, Effect.scoped);
 
-/** Executes a parsed runtime request and projects expected failures onto the existing wire contract. */
+/** Projects typed failures only; defects are handled at the runtime entry boundary. */
 export const handleFetch = Effect.fn("Background.handleFetch")(
   (request: FetchRequest, transport: FetchTransport) =>
     fetchResource(request, transport).pipe(
       Effect.timeout("30 seconds"),
+      Effect.catchTag("TimeoutError", () => Effect.fail(new NetworkError({ reason: "timeout" }))),
       Effect.match({
         onSuccess: (data): FetchReply => ({ success: true, data }),
-        onFailure: (error): FetchReply =>
-          Match.value(error).pipe(
-            Match.tag("TimeoutError", (): FetchReply => ({ success: false, error: "Timeout" })),
-            Match.tag("FetchError", (failure): FetchReply => {
-              const reply: FetchFailureReply = {
-                success: false,
-                error: failure.message,
-              };
-
-              if (failure.code !== undefined) reply.code = failure.code;
-
-              if (failure.http !== undefined) reply.http = failure.http;
-
-              return reply;
-            }),
-            Match.exhaustive,
-          ),
+        onFailure: (error): FetchReply => failureReply(error),
       }),
     ),
 );

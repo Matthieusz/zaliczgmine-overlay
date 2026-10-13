@@ -149,6 +149,11 @@ async function fixture() {
   };
 
   const context = createContext({
+    TextEncoder,
+    TextDecoder,
+    AbortController,
+    queueMicrotask,
+    clearTimeout,
     window: { ZaliczGmine: app },
     document: { getElementById: () => null },
     ZaliczGmineI18n: { t: (key: string) => key },
@@ -197,7 +202,11 @@ async function fixture() {
     "modules/gpx.js",
     "modules/map-layers.js",
   ]) {
-    runInContext(await Bun.file(path).text(), context);
+    const bundle = await Bun.build({ entrypoints: [path], target: "browser", format: "iife" });
+
+    if (!bundle.success || !bundle.outputs[0]) throw new Error("Could not bundle overlay");
+
+    runInContext(await bundle.outputs[0].text(), context);
   }
 
   const data = app.modules.communesData;

@@ -1,7 +1,8 @@
+import { failureReply, NetworkError } from "./src/user-errors.ts";
+
 (function () {
   "use strict";
 
-  const { t } = globalThis.ZaliczGmineI18n;
   const log = globalThis.ZaliczGmineLogger.create("content-script");
 
   const { MESSAGE } = globalThis.ZaliczGmineMessageProtocol;
@@ -67,7 +68,7 @@
               type: MESSAGE.FETCH_RESPONSE,
               requestId,
               response,
-              error: chrome.runtime.lastError?.message,
+              error: chrome.runtime.lastError ? "extension.noResponse" : undefined,
             },
             window.location.origin,
           );
@@ -84,7 +85,10 @@
           {
             type: MESSAGE.STORAGE_RESPONSE,
             requestId: event.data.requestId,
-            data: { ...result, resolvedLanguage: globalThis.ZaliczGmineI18n.language },
+            data: chrome.runtime.lastError
+              ? undefined
+              : { ...result, resolvedLanguage: globalThis.ZaliczGmineI18n.language },
+            error: chrome.runtime.lastError ? "storage.error" : undefined,
           },
           window.location.origin,
         );
@@ -103,7 +107,7 @@
       sendResponse({
         success: false,
         connected: false,
-        error: t("extension.unsupportedPage"),
+        error: "extension.unsupportedPage",
       });
 
       return false;
@@ -145,13 +149,13 @@
       .catch((error) => {
         window.removeEventListener("message", handler);
         clearTimeout(timeoutId);
-        sendResponse({ success: false, error: error.message });
+        sendResponse(failureReply(error));
       });
 
     const timeoutId = setTimeout(() => {
       log.warn("Command timed out", { action: request.action, requestId });
       window.removeEventListener("message", handler);
-      sendResponse({ success: false, error: "Timeout" });
+      sendResponse(failureReply(new NetworkError({ reason: "timeout" })));
     }, 5000);
 
     return true;

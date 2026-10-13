@@ -28,7 +28,17 @@ for (const path of assets) {
   await cp(path, join("dist", path), { recursive: true });
 }
 
-const bundledScripts = ["modules/map-finder.js", "modules/planned-route.js"];
+const bundledScripts = [
+  "modules/map-finder.js",
+  "modules/planned-route.js",
+  "modules/zaliczgmine-api.js",
+  "modules/extension-bridge.js",
+  "modules/communes-data.js",
+  "modules/gpx.js",
+  "map-app.js",
+  "content-script.js",
+  "popup/popup.js",
+];
 
 for (const path of scripts) {
   if (bundledScripts.includes(path)) continue;

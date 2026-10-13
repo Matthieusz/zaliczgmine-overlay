@@ -1,3 +1,5 @@
+import { failureReply, MapNotReady } from "./src/user-errors.ts";
+
 (function (app) {
   "use strict";
 
@@ -39,7 +41,7 @@
 
     if (action === ACTION.TOGGLE_COMMUNES) {
       if (!app.state.map) {
-        return { success: false, error: t("map.notFound") };
+        return failureReply(new MapNotReady({}));
       }
 
       toggleLayers(!app.state.communesVisible);
@@ -59,7 +61,7 @@
           visitedCommunesSource: app.state.visitedCommunesSource,
         };
       } catch (error) {
-        return { success: false, error: error.message };
+        return failureReply(error);
       }
     }
 
@@ -69,7 +71,7 @@
 
         return { success: true, gpx };
       } catch (error) {
-        return { success: false, error: error.message };
+        return failureReply(error);
       }
     }
 
@@ -91,7 +93,7 @@
       };
     }
 
-    return { success: false, error: t("extension.unknownAction") };
+    return { success: false, error: "extension.unknownAction" };
   }
 
   window.addEventListener("message", async (event) => {
@@ -114,7 +116,7 @@
         {
           type: MESSAGE.COMMAND_RESPONSE,
           requestId: event.data.requestId,
-          response: { success: false, error: error.message },
+          response: failureReply(error),
         },
         window.location.origin,
       );
@@ -167,7 +169,9 @@
       refreshCommunesForCurrentZoom();
 
       if (communesLoadError) {
-        showNotification(t("communes.visitedLoadError", { error: communesLoadError.message }));
+        showNotification(
+          t("communes.visitedLoadError", { error: t(failureReply(communesLoadError).error) }),
+        );
       } else {
         showNotification(t("communes.loadedSummary", { count: app.state.visitedCommunesIds.size }));
       }

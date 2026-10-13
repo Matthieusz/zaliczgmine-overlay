@@ -1,3 +1,5 @@
+import { failureReply, remoteErrorMessageKey } from "../src/user-errors.ts";
+
 document.addEventListener("DOMContentLoaded", async function () {
   const i18n = globalThis.ZaliczGmineI18n;
   const settings = await chrome.storage.local.get("language");
@@ -216,11 +218,11 @@ document.addEventListener("DOMContentLoaded", async function () {
                 gpxFileInput.value = "";
                 showStatus(t("gpx.added"), "success");
               } else if (response && response.error) {
-                if (response.error === "Komoot did not respond") {
+                if (response.error === "extension.noResponse") {
                   showStatus(t("gpx.saved"), "success");
                 } else {
                   setStoredGpxTracks(nextTracks.filter((track) => track.id !== gpx.id));
-                  showStatus(response.error, "error");
+                  showStatus(t(remoteErrorMessageKey(response.error)), "error");
                 }
               } else {
                 showStatus(t("gpx.saved"), "success");
@@ -318,7 +320,7 @@ document.addEventListener("DOMContentLoaded", async function () {
       }
     } catch (error) {
       if (version !== searchVersion) return;
-      showStatus(error.message, "error");
+      showStatus(t(failureReply(error).error), "error");
     }
   });
 
@@ -351,7 +353,7 @@ document.addEventListener("DOMContentLoaded", async function () {
                 "success",
               );
             } else if (response?.error) {
-              showStatus(response.error, "error");
+              showStatus(t(remoteErrorMessageKey(response.error)), "error");
             } else {
               showStatus(t("account.savedOpenMap", { username: user.username }), "success");
             }
@@ -371,7 +373,7 @@ document.addEventListener("DOMContentLoaded", async function () {
         updateVisibilityButton(response.visible);
         showStatus(t(response.visible ? "communes.nowVisible" : "communes.nowHidden"), "success");
       } else if (response && response.error) {
-        showStatus(response.error, "error");
+        showStatus(t(remoteErrorMessageKey(response.error)), "error");
       } else {
         showStatus(t("map.connectionError"), "error");
       }
